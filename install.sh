@@ -1382,7 +1382,10 @@ show_menu() {
             ;;
         2)
             INSTALL_MODE="migrate"
-            configure_installation
+            migrate_panel
+            echo -e "\n${GREEN}Нажмите Enter для продолжения...${NC}"
+            read
+            show_menu
             ;;
         3)
             backup_panel
@@ -1502,33 +1505,33 @@ run_installation() {
         setup_webserver
         install_application
         setup_service
+        
+        # Final checks for clean installation
+        sleep 5
+        if systemctl is-active --quiet remnawave; then
+            echo -e "\n${GREEN}╔════════════════════════════════════════╗${NC}"
+            echo -e "${GREEN}║     Installation Completed! ✓           ║${NC}"
+            echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+            echo ""
+            echo "Access your panel at: https://${DOMAIN}"
+            echo "Admin username: ${ADMIN_USERNAME}"
+            echo "Admin password: ${ADMIN_PASSWORD}"
+            echo ""
+            echo "Important files:"
+            echo "  Config: ${CONFIG_FILE}"
+            echo "  Logs: /var/log/remnawave/"
+            echo "  Backups: ${BACKUP_DIR}/"
+            echo ""
+            echo "Useful commands:"
+            echo "  systemctl status remnawave  # Check service status"
+            echo "  journalctl -u remnawave -f  # View logs"
+            echo ""
+        else
+            error "Installation completed but service is not running"
+            return 1
+        fi
     elif [[ "$INSTALL_MODE" == "migrate" ]]; then
         migrate_panel
-    fi
-    
-    # Final checks
-    sleep 5
-    if systemctl is-active --quiet remnawave; then
-        echo -e "\n${GREEN}╔════════════════════════════════════════╗${NC}"
-        echo -e "${GREEN}║     Installation Completed! ✓           ║${NC}"
-        echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
-        echo ""
-        echo "Access your panel at: https://${DOMAIN}"
-        echo "Admin username: ${ADMIN_USERNAME}"
-        echo "Admin password: ${ADMIN_PASSWORD}"
-        echo ""
-        echo "Important files:"
-        echo "  Config: ${CONFIG_FILE}"
-        echo "  Logs: /var/log/remnawave/"
-        echo "  Backups: ${BACKUP_DIR}/"
-        echo ""
-        echo "Useful commands:"
-        echo "  systemctl status remnawave  # Check service status"
-        echo "  journalctl -u remnawave -f  # View logs"
-        echo "  /opt/remnawave/scripts/backup.sh  # Manual backup"
-        echo ""
-    else
-        error "Installation completed with errors. Check logs: ${LOG_FILE}"
     fi
     
     echo -e "${GREEN}Нажмите Enter для возврата в меню...${NC}"
