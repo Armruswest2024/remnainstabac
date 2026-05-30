@@ -19,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="/var/log/remnawave_install.log"
 APP_DIR="/opt/remnawave"
 CONFIG_FILE="${APP_DIR}/.env"
-BACKUP_DIR="/var/backups/remnawave"
+BACKUP_DIR="/opt/remnawave/backups"
 PG_VERSION=""
 DOMAIN=""
 EMAIL=""
@@ -373,7 +373,7 @@ create_backup_script() {
 set -e
 
 APP_DIR="/opt/remnawave"
-BACKUP_DIR="/var/backups/remnawave"
+BACKUP_DIR="/opt/remnawave/backups"
 CONFIG_FILE="${APP_DIR}/.env"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_NAME="remnawave_backup_${TIMESTAMP}"
@@ -713,7 +713,7 @@ migrate_panel() {
     mkdir -p "$BACKUP_DIR"
     
     # Try to copy existing backup first
-    if ! scp -o StrictHostKeyChecking=no -P "$source_port" "${source_user}@${source_server}:/var/backups/remnawave/remnawave_backup_*.tar.gz" "$BACKUP_DIR/" 2>/dev/null; then
+    if ! scp -o StrictHostKeyChecking=no -P "$source_port" "${source_user}@${source_server}:/opt/remnawave/backups/remnawave_backup_*.tar.gz" "$BACKUP_DIR/" 2>/dev/null; then
         warn "No backup found on source server. Creating one now..."
         
         # Run backup script on source server
@@ -730,7 +730,7 @@ migrate_panel() {
         }
         
         # Copy the created backup
-        scp -o StrictHostKeyChecking=no -P "$source_port" "${source_user}@${source_server}:/var/backups/remnawave/remnawave_backup_*.tar.gz" "$BACKUP_DIR/" 2>/dev/null || \
+        scp -o StrictHostKeyChecking=no -P "$source_port" "${source_user}@${source_server}:/opt/remnawave/backups/remnawave_backup_*.tar.gz" "$BACKUP_DIR/" 2>/dev/null || \
         scp -o StrictHostKeyChecking=no -P "$source_port" "${source_user}@${source_server}:/tmp/remnawave_manual_backup.tar.gz" "$BACKUP_DIR/" 2>/dev/null || {
             error "Failed to create or copy backup from source server"
             return 1
