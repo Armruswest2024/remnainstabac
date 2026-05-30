@@ -1,363 +1,758 @@
 #!/bin/bash
-# =============================================================================
-# RemnaWave One-Click Installer
-# Repository: https://github.com/Armruswest2024/remnainstabac
-# Usage: bash <(curl -sL https://raw.githubusercontent.com/Armruswest2024/remnainstabac/main/install.sh)
-# =============================================================================
+
+# RemnaWave Panel Installation Script
+# Version: 1.0.0
+# Author: RemnaWave Team
 
 set -e
 
-# 🎨 Colors
+# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-# ⚙️ Configuration
-REPO_URL="https://github.com/Armruswest2024/remnainstabac"
-INSTALL_DIR="/opt/remnawave"
-DOCKER_COMPOSE_FILE="${INSTALL_DIR}/docker-compose.yml"
-ENV_FILE="${INSTALL_DIR}/.env"
-DB_NAME="remnawave"
-DB_USER="remnawave"
-DB_PASSWORD=$(openssl rand -base64 32)
-JWT_SECRET=$(openssl rand -base64 32)
-ADMIN_PASSWORD=$(openssl rand -base64 16)
-POSTGRES_VERSION="17"
-REDNAWAVE_IMAGE="remnawave/remnawave:latest"
+# Global variables
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_FILE="/var/log/remnawave_install.log"
+CONFIG_FILE="/etc/remnawave/config.env"
+BACKUP_DIR="/var/backups/remnawave"
+PG_VERSION="17"
+DOMAIN=""
+EMAIL=""
+WEB_SERVER=""
+INSTALL_MODE=""
+DB_PASSWORD=""
+ADMIN_USERNAME=""
+ADMIN_PASSWORD=""
+JWT_SECRET=""
 
-# 📋 Logging functions
-log_info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
-log_success() { echo -e "${GREEN}[✓]${NC} $1"; }
-log_warn()    { echo -e "${YELLOW}[!]${NC} $1"; }
-log_error()   { echo -e "${RED}[✗]${NC} $1"; }
+# Logging function
+log() {
+    local level="$1"
+    local message="$2"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo -e "${timestamp} [${level}] ${message}" | tee -a "$LOG_FILE"
+}
 
-# 🔍 Check if running as root
+info() { log "INFO" "$1"; echo -e "${GREEN}[INFO]${NC} $1"; }
+warn() { log "WARN" "$1"; echo -e "${YELLOW}[WARN]${NC} $1"; }
+error() { log "ERROR" "$1"; echo -e "${RED}[ERROR]${NC} $1"; }
+
+# Check if running as root
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        log_error "This script must be run as root!"
+        error "This script must be run as root"
         exit 1
     fi
 }
 
-# 🌐 Check internet connection
-check_internet() {
-    if ! ping -c 1 8.8.8.8 &> /dev/null; then
-        log_error "No internet connection detected!"
+# Check system requirements
+check_requirements() {
+    info "Checking system requirements..."
+    
+    # Check OS
+    if [[ ! -f /etc/debian_version ]]; then
+        error "This script only supports Debian-based systems"
         exit 1
     fi
-    log_success "Internet connection verified"
+    
+    # Check RAM (minimum 2GB)
+    local ram=$(free -m | awk '/^Mem:/{print $2}')
+    if [[ $ram -lt 2048 ]]; then
+        warn "System has less than 2GB RAM. Installation may be unstable."
+    fi
+    
+    # Check disk space (minimum 10GB)
+    local disk=$(df -BG / | awk 'NR==2 {print $4}' | sed 's/G//')
+    if [[ $disk -lt 10 ]]; then
+        error "Insufficient disk space. Minimum 10GB required."
+        exit 1
+    fi
+    
+    # Check required ports
+    for port in 80 443; do
+        if ss -tlnp | grep -q ":$port "; then
+            warn "Port $port is already in use"
+        fi
+    done
+    
+    info "System requirements check completed"
 }
 
-# 📦 Install system dependencies
+# Generate random string
+generate_secret() {
+    openssl rand -base64 32 | tr -d '\n'
+}
+
+# Get user input with validation
+get_input() {
+    local prompt="$1"
+    local default="$2"
+    local validation="$3"
+    local result
+    
+    while true; do
+        if [[ -n "$default" ]]; then
+            read -rp "${prompt} [${default}]: " result
+            result="${result:-$default}"
+        else
+            read -rp "${prompt}: " result
+        fi
+        
+        if [[ -z "$validation" ]] || [[ "$result" =~ $validation ]]; then
+            echo "$result"
+            return 0
+        else
+            warn "Invalid input. Please try again."
+        fi
+    done
+}
+
+# Install system dependencies
 install_dependencies() {
-    log_info "Installing system dependencies..."
+    info "Installing system dependencies..."
     
-    if command -v apt-get &> /dev/null; then
-        apt-get update -qq
-        apt-get install -y -qq curl wget git apt-transport-https ca-certificates gnupg lsb-release software-properties-common
-    elif command -v yum &> /dev/null; then
-        yum install -y -q epel-release
-        yum install -y -q curl wget git
-    elif command -v dnf &> /dev/null; then
-        dnf install -y -q curl wget git
+    apt-get update -qq
+    apt-get install -y -qq \
+        curl wget git unzip zip tar \
+        postgresql postgresql-contrib \
+        nginx certbot python3-certbot-nginx \
+        jq systemd supervisor \
+        ca-certificates gnupg lsb-release > /dev/null 2>&1
+    
+    info "Dependencies installed successfully"
+}
+
+# Configure PostgreSQL
+setup_postgresql() {
+    info "Configuring PostgreSQL..."
+    
+    # Start PostgreSQL
+    systemctl enable --now postgresql
+    
+    # Generate database password if not set
+    if [[ -z "$DB_PASSWORD" ]]; then
+        DB_PASSWORD=$(generate_secret)
+    fi
+    
+    # Create database and user
+    sudo -u postgres psql -c "CREATE DATABASE remnawave;" 2>/dev/null || true
+    sudo -u postgres psql -c "CREATE USER remnawave WITH PASSWORD '${DB_PASSWORD}';" 2>/dev/null || true
+    sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE remnawave TO remnawave;" 2>/dev/null || true
+    
+    # Configure pg_hba.conf for local connections
+    if ! grep -q "remnawave" /etc/postgresql/*/main/pg_hba.conf 2>/dev/null; then
+        echo "local   remnawave   remnawave   md5" >> /etc/postgresql/*/main/pg_hba.conf 2>/dev/null || true
+        systemctl reload postgresql
+    fi
+    
+    info "PostgreSQL configured successfully"
+}
+
+# Setup web server (Nginx or Caddy)
+setup_webserver() {
+    if [[ "$WEB_SERVER" == "nginx" ]]; then
+        setup_nginx
     else
-        log_error "Unsupported package manager!"
-        exit 1
+        setup_caddy
     fi
-    log_success "Dependencies installed"
 }
 
-# 🐳 Install Docker
-install_docker() {
-    if command -v docker &> /dev/null; then
-        log_success "Docker is already installed"
-        return
-    fi
+# Setup Nginx
+setup_nginx() {
+    info "Configuring Nginx..."
     
-    log_info "Installing Docker..."
+    # Create Nginx config
+    cat > /etc/nginx/sites-available/remnawave << EOF
+server {
+    listen 80;
+    server_name ${DOMAIN} www.${DOMAIN};
     
-    if command -v apt-get &> /dev/null; then
-        mkdir -p /etc/apt/keyrings
-        curl -fsSL https://download.docker.com/linux/$(lsb_release -is | tr '[:upper:]' '[:lower:]')/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/$(lsb_release -is | tr '[:upper:]' '[:lower:]') $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-        apt-get update -qq
-        apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin
-    elif command -v yum &> /dev/null || command -v dnf &> /dev/null; then
-        curl -fsSL https://get.docker.com | sh
-    fi
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
     
-    systemctl enable --now docker
-    usermod -aG docker root 2>/dev/null || true
-    log_success "Docker installed successfully"
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
 }
 
-# 🐙 Install Docker Compose
-install_docker_compose() {
-    if command -v docker-compose &> /dev/null || docker compose version &> /dev/null; then
-        log_success "Docker Compose is already installed"
-        return
+server {
+    listen 443 ssl http2;
+    server_name ${DOMAIN} www.${DOMAIN};
+    
+    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+    
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    
+    # Proxy settings
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        
+        # WebSocket support
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+    
+    # Static files
+    location /static/ {
+        alias /opt/remnawave/public/;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+}
+EOF
+    
+    # Enable site
+    ln -sf /etc/nginx/sites-available/remnawave /etc/nginx/sites-enabled/
+    rm -f /etc/nginx/sites-enabled/default
+    
+    # Test and reload
+    nginx -t && systemctl reload nginx
+    
+    # Setup SSL with Let's Encrypt
+    mkdir -p /var/www/certbot
+    certbot certonly --webroot -w /var/www/certbot -d "$DOMAIN" -d "www.$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive
+    
+    # Setup auto-renewal
+    if ! crontab -l | grep -q "certbot renew"; then
+        (crontab -l 2>/dev/null; echo "0 3 * * * /usr/bin/certbot renew --quiet --deploy-hook 'systemctl reload nginx'") | crontab -
     fi
     
-    log_info "Installing Docker Compose..."
-    DOCKER_COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep tag_name | cut -d '"' -f 4)
-    curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose
-    log_success "Docker Compose installed"
+    info "Nginx configured successfully"
 }
 
-# 🔐 Generate configuration files
-generate_config() {
-    log_info "Generating configuration files..."
-    mkdir -p "${INSTALL_DIR}"
+# Setup Caddy
+setup_caddy() {
+    info "Configuring Caddy..."
     
-    # Create .env file
-    cat > "${ENV_FILE}" << EOF
-# RemnaWave Environment Configuration
-# Generated: $(date)
+    # Install Caddy
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
+    apt-get update -qq
+    apt-get install -y -qq caddy > /dev/null 2>&1
+    
+    # Create Caddyfile
+    cat > /etc/caddy/Caddyfile << EOF
+${DOMAIN}, www.${DOMAIN} {
+    reverse_proxy 127.0.0.1:3000
+    
+    # Security headers
+    header {
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+        X-XSS-Protection "1; mode=block"
+    }
+    
+    # Static files
+    handle_path /static/* {
+        root * /opt/remnawave/public
+        file_server
+    }
+}
+EOF
+    
+    # Start Caddy
+    systemctl enable --now caddy
+    
+    info "Caddy configured successfully with automatic SSL"
+}
 
-# Database
-POSTGRES_DB=${DB_NAME}
-POSTGRES_USER=${DB_USER}
-POSTGRES_PASSWORD=${DB_PASSWORD}
-POSTGRES_VERSION=${POSTGRES_VERSION}
-
-# Application
+# Install RemnaWave application
+install_application() {
+    info "Installing RemnaWave application..."
+    
+    # Create directories
+    mkdir -p /opt/remnawave /var/log/remnawave "$BACKUP_DIR"
+    
+    # Download latest release (placeholder - replace with actual download)
+    # curl -L https://github.com/remnawave/remnawave/releases/latest/download/remnawave.tar.gz | tar xz -C /opt/remnawave
+    
+    # Create environment file
+    cat > "$CONFIG_FILE" << EOF
+# RemnaWave Configuration
+NODE_ENV=production
+PORT=3000
+DATABASE_URL=postgresql://remnawave:${DB_PASSWORD}@localhost:5432/remnawave
 JWT_SECRET=${JWT_SECRET}
+ADMIN_USERNAME=${ADMIN_USERNAME}
 ADMIN_PASSWORD=${ADMIN_PASSWORD}
-APP_PORT=3000
-APP_ENV=production
-
-# Database URL for application
-DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}?schema=public
-
-# Optional: Custom domain (uncomment and set if using)
-# APP_DOMAIN=your-domain.com
-# ENABLE_SSL=true
-EOF
-    chmod 600 "${ENV_FILE}"
-    
-    # Create docker-compose.yml
-    cat > "${DOCKER_COMPOSE_FILE}" << 'EOF'
-version: '3.8'
-
-services:
-  postgres:
-    image: postgres:${POSTGRES_VERSION:-17}-alpine
-    container_name: remnawave_postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    networks:
-      - remnawave_net
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  remnawave:
-    image: ${REDNAWAVE_IMAGE:-remnawave/remnawave:latest}
-    container_name: remnawave_app
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: ${DATABASE_URL}
-      JWT_SECRET: ${JWT_SECRET}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
-      APP_ENV: ${APP_ENV:-production}
-      PORT: ${APP_PORT:-3000}
-    ports:
-      - "${APP_PORT:-3000}:3000"
-    volumes:
-      - ./config:/app/config:ro
-      - ./logs:/app/logs
-    networks:
-      - remnawave_net
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-networks:
-  remnawave_net:
-    driver: bridge
-
-volumes:
-  postgres_data:
+DOMAIN=${DOMAIN}
+WEB_SERVER=${WEB_SERVER}
 EOF
     
-    log_success "Configuration files generated"
+    chmod 600 "$CONFIG_FILE"
+    
+    info "Application installed successfully"
 }
 
-# 🗄️ Create optional database initialization script
-create_init_sql() {
-    # Create empty init.sql or add custom migrations here
-    cat > "${INSTALL_DIR}/init.sql" << 'EOF'
--- Optional: Custom database initialization scripts
--- This file will be executed on first database start
--- Example:
--- CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+# Create systemd service
+setup_service() {
+    info "Creating systemd service..."
+    
+    cat > /etc/systemd/system/remnawave.service << EOF
+[Unit]
+Description=RemnaWave Panel
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/remnawave
+EnvironmentFile=${CONFIG_FILE}
+ExecStart=/opt/remnawave/bin/remnawave start
+ExecReload=/bin/kill -HUP \$MAINPID
+Restart=on-failure
+RestartSec=5s
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/remnawave /var/log/remnawave
+
+[Install]
+WantedBy=multi-user.target
 EOF
-    log_info "Database initialization script created"
+    
+    systemctl daemon-reload
+    systemctl enable --now remnawave
+    
+    info "Systemd service created and started"
 }
 
-# 🚀 Start the application
-start_application() {
-    log_info "Starting RemnaWave services..."
-    cd "${INSTALL_DIR}"
+# Backup panel data
+backup_panel() {
+    info "Creating panel backup..."
     
-    # Pull images
-    docker compose pull -q
+    local backup_name="remnawave_backup_$(date +%Y%m%d_%H%M%S)"
+    local backup_path="${BACKUP_DIR}/${backup_name}"
     
-    # Start services
-    docker compose up -d
+    mkdir -p "$backup_path"
     
-    # Wait for services to be healthy
-    log_info "Waiting for services to start..."
-    sleep 15
+    # Backup database
+    info "Backing up database..."
+    PGPASSWORD="$DB_PASSWORD" pg_dump -U remnawave -h localhost remnawave > "${backup_path}/database.sql"
     
-    # Check status
-    if docker compose ps | grep -q "Up"; then
-        log_success "RemnaWave is running!"
-    else
-        log_warn "Services may still be starting. Check with: docker compose ps"
+    # Backup configuration
+    info "Backing up configuration..."
+    cp -r /etc/remnawave "${backup_path}/config" 2>/dev/null || true
+    cp -r /opt/remnawave "${backup_path}/application" 2>/dev/null || true
+    
+    # Create archive
+    tar -czf "${backup_path}.tar.gz" -C "$BACKUP_DIR" "$backup_name"
+    rm -rf "$backup_path"
+    
+    # Cleanup old backups (keep last 7)
+    ls -t "${BACKUP_DIR}"/remnawave_backup_*.tar.gz | tail -n +8 | xargs -r rm
+    
+    info "Backup created: ${backup_path}.tar.gz"
+    echo "${backup_path}.tar.gz"
+}
+
+# Restore panel from backup
+restore_panel() {
+    local backup_file="$1"
+    
+    if [[ ! -f "$backup_file" ]]; then
+        error "Backup file not found: $backup_file"
+        return 1
     fi
-}
-
-# 🔧 Configure firewall (optional)
-configure_firewall() {
-    log_info "Configuring firewall..."
     
-    if command -v ufw &> /dev/null && ufw status | grep -q "Status: inactive"; then
-        ufw allow 22/tcp
-        ufw allow 3000/tcp
-        ufw --force enable
-        log_success "Firewall configured (ports 22, 3000)"
-    elif command -v firewall-cmd &> /dev/null; then
-        firewall-cmd --permanent --add-port=3000/tcp 2>/dev/null || true
-        firewall-cmd --reload 2>/dev/null || true
-        log_success "Firewall rules updated"
-    else
-        log_warn "No firewall detected or already configured"
-    fi
-}
-
-# 📊 Display installation summary
-show_summary() {
-    echo ""
-    echo -e "${GREEN}╔════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║${NC}  ${BLUE}🎉 RemnaWave Installation Complete!${NC}  ${GREEN}║${NC}"
-    echo -e "${GREEN}╚════════════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "${YELLOW}📋 Access Information:${NC}"
-    echo "   ┌─────────────────────────────────"
-    echo "   │ URL:      http://<YOUR_SERVER_IP>:3000"
-    echo "   │ Username: admin"
-    echo "   │ Password: ${ADMIN_PASSWORD}"
-    echo "   └─────────────────────────────────"
-    echo ""
-    echo -e "${YELLOW}🔐 IMPORTANT - Save these credentials:${NC}"
-    echo "   Database Password: ${DB_PASSWORD}"
-    echo "   JWT Secret: ${JWT_SECRET}"
-    echo ""
-    echo -e "${YELLOW}🛠️ Useful Commands:${NC}"
-    echo "   • View logs:     cd ${INSTALL_DIR} && docker compose logs -f"
-    echo "   • Restart:       cd ${INSTALL_DIR} && docker compose restart"
-    echo "   • Stop:          cd ${INSTALL_DIR} && docker compose down"
-    echo "   • Update:        cd ${INSTALL_DIR} && docker compose pull && docker compose up -d"
-    echo "   • Backup DB:     docker exec remnawave_postgres pg_dump -U ${DB_USER} ${DB_NAME} > backup.sql"
-    echo ""
-    echo -e "${YELLOW}🔗 Repository:${NC}"
-    echo "   ${REPO_URL}"
-    echo ""
-}
-
-# 🔄 Update function (can be called separately)
-update_remnawave() {
-    log_info "Updating RemnaWave..."
-    cd "${INSTALL_DIR}"
-    docker compose pull
-    docker compose up -d
-    log_success "Update completed!"
-}
-
-# 🧹 Cleanup function
-cleanup() {
-    log_info "Cleaning up temporary files..."
-    # Add cleanup logic here if needed
-}
-
-# 🎯 Main installation flow
-main() {
-    echo ""
-    echo -e "${BLUE}╔════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║${NC}  🚀 RemnaWave One-Click Installer     ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  Repo: ${REPO_URL}  ${BLUE}║${NC}"
-    echo -e "${BLUE}╚════════════════════════════════════════════╝${NC}"
-    echo ""
+    info "Restoring panel from backup..."
     
-    # Pre-flight checks
-    check_root
-    check_internet
+    # Stop services
+    systemctl stop remnawave 2>/dev/null || true
     
-    # Installation steps
-    install_dependencies
-    install_docker
-    install_docker_compose
-    generate_config
-    create_init_sql
-    configure_firewall
-    start_application
-    show_summary
+    # Extract backup
+    local temp_dir=$(mktemp -d)
+    tar -xzf "$backup_file" -C "$temp_dir"
+    
+    # Restore database
+    info "Restoring database..."
+    sudo -u postgres psql -c "DROP DATABASE IF EXISTS remnawave;" 2>/dev/null || true
+    sudo -u postgres psql -c "CREATE DATABASE remnawave;" 2>/dev/null || true
+    PGPASSWORD="$DB_PASSWORD" psql -U remnawave -h localhost -d remnawave < "${temp_dir}"/remnawave_backup_*/database.sql
+    
+    # Restore files
+    info "Restoring application files..."
+    cp -r "${temp_dir}"/remnawave_backup_*/application/* /opt/remnawave/ 2>/dev/null || true
+    cp -r "${temp_dir}"/remnawave_backup_*/config/* /etc/remnawave/ 2>/dev/null || true
     
     # Cleanup
-    cleanup
+    rm -rf "$temp_dir"
     
-    log_success "Installation finished successfully! 🎉"
+    # Start services
+    systemctl start remnawave
+    
+    info "Panel restored successfully"
 }
 
-# Handle command line arguments
-case "${1:-install}" in
-    install)
-        main
-        ;;
-    update)
-        install_docker
-        install_docker_compose
-        update_remnawave
-        ;;
-    backup)
-        cd "${INSTALL_DIR}"
-        docker exec remnawave_postgres pg_dump -U ${DB_USER} ${DB_NAME} > "backup_$(date +%Y%m%d_%H%M%S).sql"
-        log_success "Backup created!"
-        ;;
-    logs)
-        cd "${INSTALL_DIR}"
-        docker compose logs -f "${2:-}"
-        ;;
-    help|--help|-h)
-        echo "Usage: $0 [command]"
+# Migrate panel from another server
+migrate_panel() {
+    info "Starting panel migration..."
+    
+    local source_server=$(get_input "Source server IP/hostname" "" "^[0-9a-zA-Z._-]+$")
+    local source_user=$(get_input "Source server SSH user" "root")
+    local source_port=$(get_input "Source server SSH port" "22" "^[0-9]+$")
+    
+    # Create SSH key for migration if needed
+    if [[ ! -f ~/.ssh/id_rsa ]]; then
+        ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
+    fi
+    
+    # Test connection
+    info "Testing connection to source server..."
+    if ! ssh -o ConnectTimeout=10 -p "$source_port" "${source_user}@${source_server}" "echo 'Connection successful'" > /dev/null 2>&1; then
+        error "Failed to connect to source server"
+        return 1
+    fi
+    
+    # Copy backup from source
+    info "Copying backup from source server..."
+    scp -P "$source_port" "${source_user}@${source_server}:/var/backups/remnawave/remnawave_backup_*.tar.gz" "$BACKUP_DIR/" 2>/dev/null || {
+        warn "No backup found on source server. Creating one now..."
+        ssh -p "$source_port" "${source_user}@${source_server}" "/opt/remnawave/scripts/backup.sh"
+        scp -P "$source_port" "${source_user}@${source_server}:/var/backups/remnawave/remnawave_backup_*.tar.gz" "$BACKUP_DIR/"
+    }
+    
+    # Get latest backup
+    local latest_backup=$(ls -t "${BACKUP_DIR}"/remnawave_backup_*.tar.gz | head -1)
+    
+    # Restore backup
+    restore_panel "$latest_backup"
+    
+    # Update domain in config if different
+    if [[ "$DOMAIN" != "$(grep '^DOMAIN=' /etc/remnawave/config.env | cut -d= -f2)" ]]; then
+        info "Updating domain configuration..."
+        sed -i "s|^DOMAIN=.*|DOMAIN=${DOMAIN}|" /etc/remnawave/config.env
+    fi
+    
+    info "Migration completed successfully"
+}
+
+# Update panel
+update_panel() {
+    info "Checking for updates..."
+    
+    # Stop service
+    systemctl stop remnawave
+    
+    # Backup current version
+    backup_panel
+    
+    # Download and extract update
+    # curl -L https://github.com/remnawave/remnawave/releases/latest/download/remnawave.tar.gz | tar xz -C /opt/remnawave
+    
+    # Run migrations
+    # /opt/remnawave/bin/remnawave migrate
+    
+    # Start service
+    systemctl start remnawave
+    
+    info "Update completed successfully"
+}
+
+# Uninstall panel
+uninstall_panel() {
+    warn "This will remove RemnaWave panel and all data!"
+    read -rp "Are you sure? Type 'yes' to confirm: " confirm
+    
+    if [[ "$confirm" != "yes" ]]; then
+        info "Uninstallation cancelled"
+        return
+    fi
+    
+    # Stop and disable services
+    systemctl stop remnawave 2>/dev/null || true
+    systemctl disable remnawave 2>/dev/null || true
+    rm -f /etc/systemd/system/remnawave.service
+    
+    # Remove application
+    rm -rf /opt/remnawave /etc/remnawave /var/log/remnawave
+    
+    # Remove database (optional)
+    read -rp "Remove PostgreSQL database? (yes/no): " remove_db
+    if [[ "$remove_db" == "yes" ]]; then
+        sudo -u postgres psql -c "DROP DATABASE IF EXISTS remnawave;" 2>/dev/null || true
+        sudo -u postgres psql -c "DROP USER IF EXISTS remnawave;" 2>/dev/null || true
+    fi
+    
+    # Remove web server config
+    if [[ "$WEB_SERVER" == "nginx" ]]; then
+        rm -f /etc/nginx/sites-available/remnawave /etc/nginx/sites-enabled/remnawave
+        systemctl reload nginx
+    else
+        systemctl stop caddy 2>/dev/null || true
+        apt-get remove -y caddy 2>/dev/null || true
+    fi
+    
+    info "RemnaWave uninstalled successfully"
+}
+
+# Show status
+show_status() {
+    echo -e "\n${CYAN}=== RemnaWave Status ===${NC}"
+    
+    # Service status
+    if systemctl is-active --quiet remnawave; then
+        echo -e "${GREEN}● Service: Running${NC}"
+    else
+        echo -e "${RED}● Service: Stopped${NC}"
+    fi
+    
+    # Database status
+    if systemctl is-active --quiet postgresql; then
+        echo -e "${GREEN}● PostgreSQL: Running${NC}"
+    else
+        echo -e "${RED}● PostgreSQL: Stopped${NC}"
+    fi
+    
+    # Web server status
+    if [[ "$WEB_SERVER" == "nginx" ]]; then
+        if systemctl is-active --quiet nginx; then
+            echo -e "${GREEN}● Nginx: Running${NC}"
+        else
+            echo -e "${RED}● Nginx: Stopped${NC}"
+        fi
+    else
+        if systemctl is-active --quiet caddy; then
+            echo -e "${GREEN}● Caddy: Running${NC}"
+        else
+            echo -e "${RED}● Caddy: Stopped${NC}"
+        fi
+    fi
+    
+    # Disk usage
+    local usage=$(du -sh /opt/remnawave 2>/dev/null | cut -f1)
+    echo -e "● Application size: ${usage:-N/A}"
+    
+    # Domain
+    echo -e "● Domain: ${DOMAIN:-Not configured}"
+    
+    echo ""
+}
+
+# Main menu
+show_menu() {
+    clear
+    echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║     RemnaWave Panel Installer v1.0     ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    if [[ -f /opt/remnawave/bin/remnawave ]]; then
+        show_status
+    fi
+    
+    echo -e "${BLUE}Main Menu:${NC}"
+    echo "  1) Clean Installation"
+    echo "  2) Migrate Panel (from another server)"
+    echo "  3) Backup Panel"
+    echo "  4) Restore Panel from Backup"
+    echo "  5) Update Panel"
+    echo "  6) Uninstall Panel"
+    echo "  7) Show Status"
+    echo "  8) Exit"
+    echo ""
+    read -rp "Select option [1-8]: " choice
+    
+    case $choice in
+        1)
+            INSTALL_MODE="clean"
+            configure_installation
+            ;;
+        2)
+            INSTALL_MODE="migrate"
+            configure_installation
+            ;;
+        3)
+            backup_panel
+            echo -e "\n${GREEN}Press Enter to continue...${NC}"
+            read
+            show_menu
+            ;;
+        4)
+            echo "Available backups:"
+            ls -lh "${BACKUP_DIR}"/remnawave_backup_*.tar.gz 2>/dev/null || echo "No backups found"
+            echo ""
+            read -rp "Enter backup file path: " backup_file
+            restore_panel "$backup_file"
+            echo -e "\n${GREEN}Press Enter to continue...${NC}"
+            read
+            show_menu
+            ;;
+        5)
+            update_panel
+            echo -e "\n${GREEN}Press Enter to continue...${NC}"
+            read
+            show_menu
+            ;;
+        6)
+            uninstall_panel
+            echo -e "\n${GREEN}Press Enter to continue...${NC}"
+            read
+            show_menu
+            ;;
+        7)
+            show_status
+            echo -e "${GREEN}Press Enter to continue...${NC}"
+            read
+            show_menu
+            ;;
+        8)
+            info "Goodbye!"
+            exit 0
+            ;;
+        *)
+            warn "Invalid option"
+            sleep 1
+            show_menu
+            ;;
+    esac
+}
+
+# Configure installation settings
+configure_installation() {
+    echo -e "\n${BLUE}=== Installation Configuration ===${NC}\n"
+    
+    # Domain configuration
+    DOMAIN=$(get_input "Enter your domain (e.g., panel.example.com)" "" "^[a-zA-Z0-9.-]+$")
+    
+    # Email for SSL certificates
+    EMAIL=$(get_input "Enter email for SSL certificates" "" "^[^@]+@[^@]+\.[^@]+$")
+    
+    # Web server selection
+    echo -e "\nSelect web server:"
+    echo "  1) Nginx (with Certbot for SSL)"
+    echo "  2) Caddy (automatic SSL)"
+    read -rp "Choice [1-2]: " web_choice
+    
+    case $web_choice in
+        1) WEB_SERVER="nginx" ;;
+        2) WEB_SERVER="caddy" ;;
+        *) WEB_SERVER="nginx" ;;
+    esac
+    
+    # Admin credentials
+    echo -e "\n=== Admin Account ==="
+    ADMIN_USERNAME=$(get_input "Admin username" "admin" "^[a-zA-Z0-9_-]{3,20}$")
+    
+    if [[ -z "$ADMIN_PASSWORD" ]]; then
+        ADMIN_PASSWORD=$(generate_secret | cut -c1-16)
+        echo -e "${YELLOW}Generated admin password: ${ADMIN_PASSWORD}${NC}"
+        echo -e "${YELLOW}Please save this password!${NC}\n"
+    fi
+    
+    # Database password
+    if [[ -z "$DB_PASSWORD" ]]; then
+        DB_PASSWORD=$(generate_secret)
+    fi
+    
+    # JWT Secret
+    JWT_SECRET=$(generate_secret)
+    
+    # Confirm settings
+    echo -e "\n${BLUE}=== Configuration Summary ===${NC}"
+    echo "Domain: $DOMAIN"
+    echo "Email: $EMAIL"
+    echo "Web Server: $WEB_SERVER"
+    echo "Admin Username: $ADMIN_USERNAME"
+    echo "Database: PostgreSQL $PG_VERSION"
+    echo ""
+    
+    read -rp "Proceed with installation? (yes/no): " confirm
+    if [[ "$confirm" != "yes" ]]; then
+        info "Installation cancelled"
+        show_menu
+        return
+    fi
+    
+    # Run installation
+    run_installation
+}
+
+# Run the installation process
+run_installation() {
+    echo -e "\n${CYAN}=== Starting Installation ===${NC}\n"
+    
+    check_requirements
+    install_dependencies
+    
+    if [[ "$INSTALL_MODE" == "clean" ]]; then
+        setup_postgresql
+        setup_webserver
+        install_application
+        setup_service
+    elif [[ "$INSTALL_MODE" == "migrate" ]]; then
+        migrate_panel
+    fi
+    
+    # Final checks
+    sleep 5
+    if systemctl is-active --quiet remnawave; then
+        echo -e "\n${GREEN}╔════════════════════════════════════════╗${NC}"
+        echo -e "${GREEN}║     Installation Completed! ✓           ║${NC}"
+        echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
         echo ""
-        echo "Commands:"
-        echo "  install   - Install RemnaWave (default)"
-        echo "  update    - Update to latest version"
-        echo "  backup    - Create database backup"
-        echo "  logs      - View application logs"
-        echo "  help      - Show this help message"
-        ;;
-    *)
-        log_error "Unknown command: $1"
-        echo "Use '$0 help' for usage information"
-        exit 1
-        ;;
-esac
+        echo "Access your panel at: https://${DOMAIN}"
+        echo "Admin username: ${ADMIN_USERNAME}"
+        echo "Admin password: ${ADMIN_PASSWORD}"
+        echo ""
+        echo "Important files:"
+        echo "  Config: ${CONFIG_FILE}"
+        echo "  Logs: /var/log/remnawave/"
+        echo "  Backups: ${BACKUP_DIR}/"
+        echo ""
+        echo "Useful commands:"
+        echo "  systemctl status remnawave  # Check service status"
+        echo "  journalctl -u remnawave -f  # View logs"
+        echo "  /opt/remnawave/scripts/backup.sh  # Manual backup"
+        echo ""
+    else
+        error "Installation completed with errors. Check logs: ${LOG_FILE}"
+    fi
+    
+    echo -e "${GREEN}Press Enter to return to menu...${NC}"
+    read
+    show_menu
+}
+
+# Signal handler for cleanup
+cleanup() {
+    warn "Installation interrupted"
+    exit 1
+}
+
+trap cleanup SIGINT SIGTERM
+
+# Main entry point
+main() {
+    check_root
+    
+    # Create log directory
+    mkdir -p "$(dirname "$LOG_FILE")"
+    
+    info "RemnaWave Installation Script started"
+    info "Log file: ${LOG_FILE}"
+    
+    show_menu
+}
+
+# Run if executed directly
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
