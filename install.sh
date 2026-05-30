@@ -565,14 +565,14 @@ fi
 
 mkdir -p "$BACKUP_PATH"
 
-echo "Starting backup..."
+echo "Начало резервного копирования..."
 
 # Backup database
-echo "Backing up database..."
+echo "Резервное копирование базы данных..."
 PGPASSWORD="${DB_PASSWORD}" pg_dump -U remnawave -h localhost remnawave > "${BACKUP_PATH}/database.sql"
 
 # Backup configuration
-echo "Backing up configuration..."
+echo "Резервное копирование конфигурации..."
 cp "$CONFIG_FILE" "${BACKUP_PATH}/config.env" 2>/dev/null || true
 cp -r "${APP_DIR}" "${BACKUP_PATH}/application" 2>/dev/null || true
 
@@ -584,7 +584,7 @@ rm -rf "$BACKUP_PATH"
 # Cleanup old backups (keep last 7)
 ls -t "${BACKUP_DIR}"/remnawave_backup_*.tar.gz | tail -n +8 | xargs -r rm
 
-echo "Backup created: ${BACKUP_DIR}/${BACKUP_NAME}.tar.gz"
+echo "Бэкап создан: ${BACKUP_DIR}/${BACKUP_NAME}.tar.gz"
 echo "${BACKUP_DIR}/${BACKUP_NAME}.tar.gz"
 BACKUP_SCRIPT
     
@@ -630,12 +630,12 @@ EOF
     systemctl daemon-reload
     systemctl enable --now remnawave
     
-    info "Systemd service created and started"
+    info "Systemd сервис создан и запущен"
 }
 
 # Backup panel data
 backup_panel() {
-    info "Creating panel backup..."
+    info "Создание резервной копии панели..."
     
     local backup_name="remnawave_backup_$(date +%Y%m%d_%H%M%S)"
     local backup_path="${BACKUP_DIR}/${backup_name}"
@@ -668,15 +668,15 @@ backup_panel() {
     echo "$current_web" > "${backup_path}/web_server_type"
 
     # Backup database
-    info "Backing up database..."
+    info "Резервное копирование базы данных..."
     if PGPASSWORD="$DB_PASSWORD" pg_dump -U remnawave -h localhost remnawave > "${backup_path}/database.sql" 2>/dev/null; then
-        info "Database backup completed"
+        info "Резервное копирование базы данных завершено"
     else
-        warn "Database backup failed or database is not accessible"
+        warn "Не удалось создать резервную копию базы данных или база данных недоступна"
     fi
     
     # Backup configuration
-    info "Backing up configuration..."
+    info "Резервное копирование конфигурации..."
     cp "$CONFIG_FILE" "${backup_path}/config.env" 2>/dev/null || true
     cp -r "${APP_DIR}/data" "${backup_path}/data" 2>/dev/null || true
     cp -r "${APP_DIR}/db" "${backup_path}/db" 2>/dev/null || true
@@ -686,12 +686,12 @@ backup_panel() {
     # Backup web server configs based on detected type
     if [[ "$current_web" == "nginx" ]]; then
         if [[ -d "/opt/remnawave/nginx" ]]; then
-            info "Backing up Nginx SSL certificates and configuration..."
+            info "Резервное копирование SSL сертификатов и конфигурации Nginx..."
             cp -r /opt/remnawave/nginx "${backup_path}/nginx" 2>/dev/null || true
         fi
     elif [[ "$current_web" == "caddy" ]]; then
         if [[ -d "/opt/remnawave/caddy" ]]; then
-            info "Backing up Caddy configuration and data..."
+            info "Резервное копирование конфигурации и данных Caddy..."
             cp -r /opt/remnawave/caddy "${backup_path}/caddy" 2>/dev/null || true
         fi
     else
@@ -711,7 +711,7 @@ backup_panel() {
     # Cleanup old backups (keep last 7)
     ls -t "${BACKUP_DIR}"/remnawave_backup_*.tar.gz 2>/dev/null | tail -n +8 | xargs -r rm
     
-    info "Backup created: ${backup_path}.tar.gz"
+    info "Бэкап создан: ${backup_path}.tar.gz"
     echo "${backup_path}.tar.gz"
 }
 
@@ -1104,20 +1104,20 @@ EOF
 
 # Migrate panel from another server
 migrate_panel() {
-    info "Starting panel migration..."
+    info "Запуск миграции панели..."
     
     # Ask if domain will change
-    echo -e "\n${BLUE}=== Migration Options ===${NC}"
-    read -rp "Will the domain change during migration? (yes/no): " domain_change
+    echo -e "\n${BLUE}=== Параметры миграции ===${NC}"
+    read -rp "Будет ли изменён домен во время миграции? (yes/no): " domain_change
     
-    local source_server=$(get_input "Source server IP/hostname" "" "^[0-9a-zA-Z._-]+$")
-    local source_user=$(get_input "Source server SSH user" "root")
-    local source_port=$(get_input "Source server SSH port" "22" "^[0-9]+$")
+    local source_server=$(get_input "IP/hostname исходного сервера" "" "^[0-9a-zA-Z._-]+$")
+    local source_user=$(get_input "SSH пользователь исходного сервера" "root")
+    local source_port=$(get_input "SSH порт исходного сервера" "22" "^[0-9]+$")
     
     # Get new domain if it will change
     if [[ "$domain_change" == "yes" ]]; then
-        DOMAIN=$(get_input "Enter NEW domain for this server" "" "^[a-zA-Z0-9.-]+$")
-        EMAIL=$(get_input "Enter email for SSL certificates" "" "^[^@]+@[^@]+\.[^@]+$")
+        DOMAIN=$(get_input "Введите НОВЫЙ домен для этого сервера" "" "^[a-zA-Z0-9.-]+$")
+        EMAIL=$(get_input "Введите email для SSL сертификатов" "" "^[^@]+@[^@]+\.[^@]+$")
     fi
     
     # Create SSH key for migration if needed
@@ -1192,34 +1192,34 @@ migrate_panel() {
     # Restore backup (will handle domain update if needed)
     restore_panel "$latest_backup"
     
-    info "Migration completed successfully"
+    info "Миграция успешно завершена"
     
     if [[ "$domain_change" == "yes" ]]; then
-        echo -e "\n${GREEN}Domain updated to ${DOMAIN}${NC}"
-        echo -e "${YELLOW}Note: Make sure DNS records point to this server's IP${NC}"
+        echo -e "\n${GREEN}Домен обновлён на ${DOMAIN}${NC}"
+        echo -e "${YELLOW}Примечание: Убедитесь, что DNS записи указывают на IP этого сервера${NC}"
     fi
 }
 
 # Update panel
 update_panel() {
-    info "Checking for updates..."
+    info "Проверка обновлений..."
     
     # Get current version info
     local current_version="unknown"
     if [[ -f /opt/remnawave/VERSION ]]; then
         current_version=$(cat /opt/remnawave/VERSION)
     fi
-    info "Current version: $current_version"
+    info "Текущая версия: $current_version"
     
     # Stop service
     systemctl stop remnawave 2>/dev/null || true
     
     # Backup current version
-    info "Creating pre-update backup..."
+    info "Создание резервной копии перед обновлением..."
     backup_panel
     
     # Download and extract update
-    info "Downloading latest version..."
+    info "Загрузка последней версии..."
     local download_url="https://github.com/${GITHUB_REPO}/releases/latest/download/remnawave.tar.gz"
     
     if curl -sfL "$download_url" -o /tmp/remnawave_update.tar.gz 2>/dev/null; then
@@ -1240,14 +1240,14 @@ update_panel() {
         rm -rf /opt/remnawave.backup
         
         # Run migrations
-        info "Running database migrations..."
+        info "Выполнение миграции базы данных..."
         if [[ -x /opt/remnawave/bin/remnawave ]]; then
-            /opt/remnawave/bin/remnawave migrate 2>/dev/null || warn "Migrations may have failed"
+            /opt/remnawave/bin/remnawave migrate 2>/dev/null || warn "Миграция могла не завершиться успешно"
         fi
         
-        info "Update completed successfully"
+        info "Обновление успешно завершено"
     else
-        warn "Could not download update. Check your internet connection."
+        warn "Не удалось загрузить обновление. Проверьте подключение к интернету."
         systemctl start remnawave 2>/dev/null || true
         return 1
     fi
@@ -1258,20 +1258,20 @@ update_panel() {
     # Verify service is running
     sleep 3
     if systemctl is-active --quiet remnawave; then
-        info "RemnaWave is running after update"
+        info "RemnaWave запущен после обновления"
     else
-        error "RemnaWave failed to start after update. Restoring from backup..."
+        error "RemnaWave не удалось запустить после обновления. Восстановление из резервной копии..."
         return 1
     fi
 }
 
 # Uninstall panel
 uninstall_panel() {
-    warn "This will remove RemnaWave panel and all data!"
-    read -rp "Are you sure? Type 'yes' to confirm: " confirm
+    warn "Это удалит панель RemnaWave и все данные!"
+    read -rp "Вы уверены? Введите 'yes' для подтверждения: " confirm
     
     if [[ "$confirm" != "yes" ]]; then
-        info "Uninstallation cancelled"
+        info "Удаление отменено"
         return
     fi
     
@@ -1284,7 +1284,7 @@ uninstall_panel() {
     rm -rf "${APP_DIR}" /var/log/remnawave "$BACKUP_DIR"
     
     # Remove database (optional)
-    read -rp "Remove PostgreSQL database? (yes/no): " remove_db
+    read -rp "Удалить базу данных PostgreSQL? (yes/no): " remove_db
     if [[ "$remove_db" == "yes" ]]; then
         sudo -u postgres psql -c "DROP DATABASE IF EXISTS remnawave;" 2>/dev/null || true
         sudo -u postgres psql -c "DROP USER IF EXISTS remnawave;" 2>/dev/null || true
@@ -1299,7 +1299,7 @@ uninstall_panel() {
         apt-get remove -y caddy 2>/dev/null || true
     fi
     
-    info "RemnaWave uninstalled successfully"
+    info "RemnaWave успешно удалён"
 }
 
 # Show status
@@ -1436,19 +1436,19 @@ show_menu() {
 
 # Configure installation settings
 configure_installation() {
-    echo -e "\n${BLUE}=== Installation Configuration ===${NC}\n"
+    echo -e "\n${BLUE}=== Настройка установки ===${NC}\n"
     
     # Domain configuration
-    DOMAIN=$(get_input "Enter your domain (e.g., panel.example.com)" "" "^[a-zA-Z0-9.-]+$")
+    DOMAIN=$(get_input "Введите ваш домен (например, panel.example.com)" "" "^[a-zA-Z0-9.-]+$")
     
     # Email for SSL certificates
-    EMAIL=$(get_input "Enter email for SSL certificates" "" "^[^@]+@[^@]+\.[^@]+$")
+    EMAIL=$(get_input "Введите email для SSL сертификатов" "" "^[^@]+@[^@]+\.[^@]+$")
     
     # Web server selection
-    echo -e "\nSelect web server:"
-    echo "  1) Nginx (with Certbot for SSL)"
-    echo "  2) Caddy (automatic SSL)"
-    read -rp "Choice [1-2]: " web_choice
+    echo -e "\nВыберите веб-сервер:"
+    echo "  1) Nginx (с Certbot для SSL)"
+    echo "  2) Caddy (автоматический SSL)"
+    read -rp "Выбор [1-2]: " web_choice
     
     case $web_choice in
         1) WEB_SERVER="nginx" ;;
@@ -1457,20 +1457,20 @@ configure_installation() {
     esac
     
     # Admin credentials
-    echo -e "\n=== Admin Account ==="
-    ADMIN_USERNAME=$(get_input "Admin username" "admin" "^[a-zA-Z0-9_-]{3,20}$")
+    echo -e "\n=== Учётная запись администратора ==="
+    ADMIN_USERNAME=$(get_input "Имя пользователя администратора" "admin" "^[a-zA-Z0-9_-]{3,20}$")
     
     if [[ -z "$ADMIN_PASSWORD" ]]; then
         ADMIN_PASSWORD=$(generate_secret | cut -c1-16)
-        echo -e "${YELLOW}Generated admin password: ${ADMIN_PASSWORD}${NC}"
-        echo -e "${YELLOW}Please save this password!${NC}\n"
+        echo -e "${YELLOW}Сгенерированный пароль администратора: ${ADMIN_PASSWORD}${NC}"
+        echo -e "${YELLOW}Пожалуйста, сохраните этот пароль!${NC}\n"
     fi
 
     # Subscription subdomain (optional)
-    echo -e "\n=== Subscription Subdomain (Optional) ==="
-    echo "Enter a subdomain for subscription page (e.g., sub.example.com)"
-    echo "Leave empty to skip subdomain configuration"
-    SUB_DOMAIN=$(get_input "Subscription subdomain" "" "^[a-zA-Z0-9.-]*$")
+    echo -e "\n=== Поддомен для страницы подписки (опционально) ==="
+    echo "Введите поддомен для страницы подписки (например, sub.example.com)"
+    echo "Оставьте пустым, чтобы пропустить настройку поддомена"
+    SUB_DOMAIN=$(get_input "Поддомен для подписки" "" "^[a-zA-Z0-9.-]*$")
     
     # Database password
     if [[ -z "$DB_PASSWORD" ]]; then
@@ -1481,18 +1481,18 @@ configure_installation() {
     JWT_SECRET=$(generate_secret)
     
     # Confirm settings
-    echo -e "\n${BLUE}=== Configuration Summary ===${NC}"
-    echo "Domain: $DOMAIN"
+    echo -e "\n${BLUE}=== Сводка конфигурации ===${NC}"
+    echo "Домен: $DOMAIN"
     echo "Email: $EMAIL"
-    echo "Web Server: $WEB_SERVER"
+    echo "Веб-сервер: $WEB_SERVER"
     if [[ -n "$SUB_DOMAIN" ]]; then
-        echo "Subscription Subdomain: $SUB_DOMAIN"
+        echo "Поддомен для подписки: $SUB_DOMAIN"
     fi
-    echo "Admin Username: $ADMIN_USERNAME"
-    echo "Database: PostgreSQL $PG_VERSION"
+    echo "Имя пользователя администратора: $ADMIN_USERNAME"
+    echo "База данных: PostgreSQL $PG_VERSION"
     echo ""
     
-    read -rp "Proceed with installation? (yes/no): " confirm
+    read -rp "Продолжить установку? (yes/no): " confirm
     if [[ "$confirm" != "yes" ]]; then
         info "Installation cancelled"
         show_menu
@@ -1505,7 +1505,7 @@ configure_installation() {
 
 # Run the installation process
 run_installation() {
-    echo -e "\n${CYAN}=== Starting Installation ===${NC}\n"
+    echo -e "\n${CYAN}=== Запуск установки ===${NC}\n"
     
     check_requirements
     install_dependencies
@@ -1520,24 +1520,24 @@ run_installation() {
         sleep 5
         if systemctl is-active --quiet remnawave; then
             echo -e "\n${GREEN}╔════════════════════════════════════════╗${NC}"
-            echo -e "${GREEN}║     Installation Completed! ✓           ║${NC}"
+            echo -e "${GREEN}║     Установка завершена! ✓              ║${NC}"
             echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
             echo ""
-            echo "Access your panel at: https://${DOMAIN}"
-            echo "Admin username: ${ADMIN_USERNAME}"
-            echo "Admin password: ${ADMIN_PASSWORD}"
+            echo "Доступ к панели: https://${DOMAIN}"
+            echo "Имя пользователя администратора: ${ADMIN_USERNAME}"
+            echo "Пароль администратора: ${ADMIN_PASSWORD}"
             echo ""
-            echo "Important files:"
-            echo "  Config: ${CONFIG_FILE}"
-            echo "  Logs: /var/log/remnawave/"
-            echo "  Backups: ${BACKUP_DIR}/"
+            echo "Важные файлы:"
+            echo "  Конфигурация: ${CONFIG_FILE}"
+            echo "  Логи: /var/log/remnawave/"
+            echo "  Бэкапы: ${BACKUP_DIR}/"
             echo ""
-            echo "Useful commands:"
-            echo "  systemctl status remnawave  # Check service status"
-            echo "  journalctl -u remnawave -f  # View logs"
+            echo "Полезные команды:"
+            echo "  systemctl status remnawave  # Проверить статус сервиса"
+            echo "  journalctl -u remnawave -f  # Просмотр логов"
             echo ""
         else
-            error "Installation completed but service is not running"
+            error "Установка завершена, но сервис не запущен"
             return 1
         fi
     elif [[ "$INSTALL_MODE" == "migrate" ]]; then
