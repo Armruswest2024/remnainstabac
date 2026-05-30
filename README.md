@@ -108,7 +108,7 @@ sudo ./install.sh
 
 **Что включается в бэкап:**
 - Дамп PostgreSQL базы данных
-- Конфигурационные файлы (`/etc/remnawave/`)
+- Конфигурационный файл (`.env` в `/opt/remnawave/`)
 - Файлы приложения (`/opt/remnawave/`)
 
 **Автоматические бэкапы:**
@@ -159,7 +159,7 @@ sudo ./install.sh
 
 **Что удаляется:**
 - Файлы приложения (`/opt/remnawave/`)
-- Конфигурация (`/etc/remnawave/`)
+- Конфигурационный файл (`.env` в `/opt/remnawave/`)
 - База данных PostgreSQL
 - Конфигурация веб-сервера
 - Systemd сервис
@@ -174,15 +174,14 @@ sudo ./install.sh
 ### Структура установки
 
 ```
-/opt/remnawave/           # Приложение
+/opt/remnawave/           # Приложение и конфигурация
+├── .env                  # Основной конфиг (DATABASE_URL, секреты, домен)
 ├── bin/                  # Исполняемые файлы
+│   └── remnawave         # Главный бинарник
 ├── public/               # Статические файлы
 ├── logs/                 # Логи приложения
 └── scripts/              # Скрипты утилит
     └── backup.sh         # Скрипт бэкапа
-
-/etc/remnawave/           # Конфигурация
-└── config.env            # Основной конфиг
 
 /var/backups/remnawave/   # Бэкапы
 └── remnawave_backup_*.tar.gz
@@ -194,7 +193,7 @@ sudo ./install.sh
 
 ### Конфигурационный файл
 
-Файл `/etc/remnawave/config.env` содержит:
+Файл `/opt/remnawave/.env` содержит:
 
 ```bash
 NODE_ENV=production
@@ -219,7 +218,7 @@ Requires=postgresql.service
 Type=simple
 User=root
 WorkingDirectory=/opt/remnawave
-EnvironmentFile=/etc/remnawave/config.env
+EnvironmentFile=/opt/remnawave/.env
 ExecStart=/opt/remnawave/bin/remnawave start
 Restart=on-failure
 
