@@ -1,1 +1,1 @@
-Nothing needs to be added to .gitignore since only a shell script file (`install.sh`) was modified and no build artifacts, dependencies, or temporary files were detected in the changes.
+Nothing should be ignored based on the provided file changes. The changes only include source/config files (README.md) and a shell script (install.sh), with no build artifacts, dependencies, or temporary files that need to be ignored.
