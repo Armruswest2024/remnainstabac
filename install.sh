@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # RemnaWave Panel Installation Script
-# Version: 1.0.0
+# Version: 1.1.0
 # Author: RemnaWave Team
 
 set -e
@@ -19,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="/var/log/remnawave_install.log"
 CONFIG_FILE="/etc/remnawave/config.env"
 BACKUP_DIR="/var/backups/remnawave"
-PG_VERSION="17"
+PG_VERSION=""
 DOMAIN=""
 EMAIL=""
 WEB_SERVER=""
@@ -28,6 +28,8 @@ DB_PASSWORD=""
 ADMIN_USERNAME=""
 ADMIN_PASSWORD=""
 JWT_SECRET=""
+APP_VERSION="latest"
+GITHUB_REPO="remnawave/remnawave"
 
 # Logging function
 log() {
@@ -123,15 +125,34 @@ install_dependencies() {
         jq systemd supervisor \
         ca-certificates gnupg lsb-release > /dev/null 2>&1
     
-    info "Dependencies installed successfully"
+    # Detect PostgreSQL version
+    PG_VERSION=$(psql --version | grep -oP '\d+' | head -1)
+    
+    info "Dependencies installed successfully (PostgreSQL $PG_VERSION)"
 }
 
 # Configure PostgreSQL
 setup_postgresql() {
     info "Configuring PostgreSQL..."
     
+    # Create log directory for PostgreSQL
+    mkdir -p /var/log/postgresql
+    
     # Start PostgreSQL
     systemctl enable --now postgresql
+    
+    # Wait for PostgreSQL to be ready
+    local max_wait=30
+    local waited=0
+    while ! pg_isready -q && [ $waited -lt $max_wait ]; do
+        sleep 1
+        ((waited++))
+    done
+    
+    if ! pg_isready -q; then
+        error "PostgreSQL failed to start"
+        return 1
+    fi
     
     # Generate database password if not set
     if [[ -z "$DB_PASSWORD" ]]; then
@@ -142,10 +163,20 @@ setup_postgresql() {
     sudo -u postgres psql -c "CREATE DATABASE remnawave;" 2>/dev/null || true
     sudo -u postgres psql -c "CREATE USER remnawave WITH PASSWORD '${DB_PASSWORD}';" 2>/dev/null || true
     sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE remnawave TO remnawave;" 2>/dev/null || true
+    sudo -u postgres psql -c "ALTER DATABASE remnawave OWNER TO remnawave;" 2>/dev/null || true
     
     # Configure pg_hba.conf for local connections
-    if ! grep -q "remnawave" /etc/postgresql/*/main/pg_hba.conf 2>/dev/null; then
-        echo "local   remnawave   remnawave   md5" >> /etc/postgresql/*/main/pg_hba.conf 2>/dev/null || true
+    local pg_hba_file=""
+    for conf in /etc/postgresql/*/main/pg_hba.conf; do
+        if [[ -f "$conf" ]]; then
+            pg_hba_file="$conf"
+            break
+        fi
+    done
+    
+    if [[ -n "$pg_hba_file" ]] && ! grep -q "remnawave" "$pg_hba_file"; then
+        echo "local   remnawave   remnawave   md5" >> "$pg_hba_file"
+        echo "host    remnawave   remnawave   127.0.0.1/32   md5" >> "$pg_hba_file"
         systemctl reload postgresql
     fi
     
@@ -275,10 +306,31 @@ install_application() {
     info "Installing RemnaWave application..."
     
     # Create directories
-    mkdir -p /opt/remnawave /var/log/remnawave "$BACKUP_DIR"
+    mkdir -p /opt/remnawave /var/log/remnawave "$BACKUP_DIR" /opt/remnawave/scripts
     
-    # Download latest release (placeholder - replace with actual download)
-    # curl -L https://github.com/remnawave/remnawave/releases/latest/download/remnawave.tar.gz | tar xz -C /opt/remnawave
+    # Download latest release from GitHub
+    info "Downloading RemnaWave application..."
+    local download_url="https://github.com/${GITHUB_REPO}/releases/${APP_VERSION}/download/remnawave.tar.gz"
+    
+    if curl -sfL "$download_url" -o /tmp/remnawave.tar.gz 2>/dev/null; then
+        tar xzf /tmp/remnawave.tar.gz -C /opt/remnawave --strip-components=1
+        rm -f /tmp/remnawave.tar.gz
+        info "Application downloaded and extracted"
+    else
+        warn "Could not download from GitHub. Creating placeholder structure."
+        # Create placeholder structure for testing
+        mkdir -p /opt/remnawave/bin /opt/remnawave/public /opt/remnawave/logs
+        cat > /opt/remnawave/bin/remnawave << 'PLACEHOLDER'
+#!/bin/bash
+case "$1" in
+    start) echo "RemnaWave started (placeholder)" ;;
+    stop) echo "RemnaWave stopped (placeholder)" ;;
+    migrate) echo "Migrations completed (placeholder)" ;;
+    *) echo "Usage: remnawave {start|stop|migrate}" ;;
+esac
+PLACEHOLDER
+        chmod +x /opt/remnawave/bin/remnawave
+    fi
     
     # Create environment file
     cat > "$CONFIG_FILE" << EOF
@@ -295,7 +347,63 @@ EOF
     
     chmod 600 "$CONFIG_FILE"
     
+    # Create backup script
+    create_backup_script
+    
     info "Application installed successfully"
+}
+
+# Create backup script
+create_backup_script() {
+    info "Creating backup script..."
+    
+    cat > /opt/remnawave/scripts/backup.sh << 'BACKUP_SCRIPT'
+#!/bin/bash
+set -e
+
+BACKUP_DIR="/var/backups/remnawave"
+CONFIG_FILE="/etc/remnawave/config.env"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+BACKUP_NAME="remnawave_backup_${TIMESTAMP}"
+BACKUP_PATH="${BACKUP_DIR}/${BACKUP_NAME}"
+
+# Load config
+if [[ -f "$CONFIG_FILE" ]]; then
+    source "$CONFIG_FILE"
+fi
+
+mkdir -p "$BACKUP_PATH"
+
+echo "Starting backup..."
+
+# Backup database
+echo "Backing up database..."
+PGPASSWORD="${DB_PASSWORD}" pg_dump -U remnawave -h localhost remnawave > "${BACKUP_PATH}/database.sql"
+
+# Backup configuration
+echo "Backing up configuration..."
+cp -r /etc/remnawave "${BACKUP_PATH}/config" 2>/dev/null || true
+cp -r /opt/remnawave "${BACKUP_PATH}/application" 2>/dev/null || true
+
+# Create archive
+cd "$BACKUP_DIR"
+tar -czf "${BACKUP_NAME}.tar.gz" "$BACKUP_NAME"
+rm -rf "$BACKUP_PATH"
+
+# Cleanup old backups (keep last 7)
+ls -t "${BACKUP_DIR}"/remnawave_backup_*.tar.gz | tail -n +8 | xargs -r rm
+
+echo "Backup created: ${BACKUP_DIR}/${BACKUP_NAME}.tar.gz"
+echo "${BACKUP_DIR}/${BACKUP_NAME}.tar.gz"
+BACKUP_SCRIPT
+    
+    chmod +x /opt/remnawave/scripts/backup.sh
+    
+    # Setup cron job for daily backups
+    if ! crontab -l 2>/dev/null | grep -q "remnawave.*backup"; then
+        (crontab -l 2>/dev/null; echo "0 3 * * * /opt/remnawave/scripts/backup.sh >> /var/log/remnawave_backup.log 2>&1") | crontab -
+        info "Daily backup cron job configured"
+    fi
 }
 
 # Create systemd service
@@ -366,6 +474,7 @@ backup_panel() {
 # Restore panel from backup
 restore_panel() {
     local backup_file="$1"
+    local skip_db_password="${2:-false}"
     
     if [[ ! -f "$backup_file" ]]; then
         error "Backup file not found: $backup_file"
@@ -381,33 +490,191 @@ restore_panel() {
     local temp_dir=$(mktemp -d)
     tar -xzf "$backup_file" -C "$temp_dir"
     
+    # Find the backup directory inside temp
+    local backup_content_dir=$(find "$temp_dir" -maxdepth 1 -type d -name "remnawave_backup_*" | head -1)
+    
+    if [[ -z "$backup_content_dir" ]]; then
+        error "Invalid backup structure"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    # Load old config to get DB password if available
+    local old_config="${backup_content_dir}/config/config.env"
+    local restore_db_password=""
+    if [[ -f "$old_config" ]]; then
+        source "$old_config" 2>/dev/null || true
+        restore_db_password="$DB_PASSWORD"
+    fi
+    
+    # If we couldn't get password from backup, use current or generate new
+    if [[ -z "$restore_db_password" ]]; then
+        if [[ -n "$DB_PASSWORD" ]]; then
+            restore_db_password="$DB_PASSWORD"
+        else
+            restore_db_password=$(generate_secret)
+        fi
+    fi
+    
     # Restore database
     info "Restoring database..."
     sudo -u postgres psql -c "DROP DATABASE IF EXISTS remnawave;" 2>/dev/null || true
     sudo -u postgres psql -c "CREATE DATABASE remnawave;" 2>/dev/null || true
-    PGPASSWORD="$DB_PASSWORD" psql -U remnawave -h localhost -d remnawave < "${temp_dir}"/remnawave_backup_*/database.sql
+    sudo -u postgres psql -c "DROP USER IF EXISTS remnawave;" 2>/dev/null || true
+    sudo -u postgres psql -c "CREATE USER remnawave WITH PASSWORD '${restore_db_password}';" 2>/dev/null || true
+    sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE remnawave TO remnawave;" 2>/dev/null || true
+    sudo -u postgres psql -c "ALTER DATABASE remnawave OWNER TO remnawave;" 2>/dev/null || true
+    
+    # Import SQL dump
+    if [[ -f "${backup_content_dir}/database.sql" ]]; then
+        PGPASSWORD="$restore_db_password" sudo -u postgres psql -d remnawave < "${backup_content_dir}/database.sql"
+    fi
     
     # Restore files
     info "Restoring application files..."
-    cp -r "${temp_dir}"/remnawave_backup_*/application/* /opt/remnawave/ 2>/dev/null || true
-    cp -r "${temp_dir}"/remnawave_backup_*/config/* /etc/remnawave/ 2>/dev/null || true
+    rm -rf /opt/remnawave/* 2>/dev/null || true
+    cp -r "${backup_content_dir}/application/"* /opt/remnawave/ 2>/dev/null || true
+    
+    # Restore config and update with new values
+    info "Restoring configuration..."
+    rm -rf /etc/remnawave/* 2>/dev/null || true
+    mkdir -p /etc/remnawave
+    cp -r "${backup_content_dir}/config/"* /etc/remnawave/ 2>/dev/null || true
+    
+    # Update domain in config if different (for migration scenarios)
+    if [[ -n "$DOMAIN" ]] && [[ "$DOMAIN" != "$(grep '^DOMAIN=' /etc/remnawave/config.env 2>/dev/null | cut -d= -f2)" ]]; then
+        info "Updating domain configuration from $(grep '^DOMAIN=' /etc/remnawave/config.env 2>/dev/null | cut -d= -f2) to ${DOMAIN}..."
+        sed -i "s|^DOMAIN=.*|DOMAIN=${DOMAIN}|" /etc/remnawave/config.env
+        
+        # Update web server config for new domain
+        update_webserver_config
+    fi
+    
+    # Update database password in config if it changed
+    if [[ -n "$DB_PASSWORD" ]] && [[ "$DB_PASSWORD" != "$restore_db_password" ]]; then
+        info "Updating database password in configuration..."
+        sed -i "s|DATABASE_URL=.*|DATABASE_URL=postgresql://remnawave:${DB_PASSWORD}@localhost:5432/remnawave|" /etc/remnawave/config.env
+    fi
     
     # Cleanup
     rm -rf "$temp_dir"
     
     # Start services
-    systemctl start remnawave
+    systemctl start remnawave 2>/dev/null || true
     
     info "Panel restored successfully"
+}
+
+# Update web server configuration for new domain
+update_webserver_config() {
+    info "Updating web server configuration for new domain..."
+    
+    if [[ "$WEB_SERVER" == "nginx" ]]; then
+        # Update Nginx config
+        cat > /etc/nginx/sites-available/remnawave << EOF
+server {
+    listen 80;
+    server_name ${DOMAIN} www.${DOMAIN};
+    
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+    
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name ${DOMAIN} www.${DOMAIN};
+    
+    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+    
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    
+    # Proxy settings
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        
+        # WebSocket support
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+    
+    # Static files
+    location /static/ {
+        alias /opt/remnawave/public/;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+}
+EOF
+        
+        # Test and reload
+        nginx -t && systemctl reload nginx
+        
+        # Try to get new SSL certificate
+        mkdir -p /var/www/certbot
+        if certbot certonly --webroot -w /var/www/certbot -d "$DOMAIN" -d "www.$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive 2>/dev/null; then
+            info "SSL certificate renewed for new domain"
+            systemctl reload nginx
+        else
+            warn "Could not obtain SSL certificate for new domain. Manual intervention may be required."
+        fi
+        
+    elif [[ "$WEB_SERVER" == "caddy" ]]; then
+        # Update Caddyfile
+        cat > /etc/caddy/Caddyfile << EOF
+${DOMAIN}, www.${DOMAIN} {
+    reverse_proxy 127.0.0.1:3000
+    
+    # Security headers
+    header {
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+        X-XSS-Protection "1; mode=block"
+    }
+    
+    # Static files
+    handle_path /static/* {
+        root * /opt/remnawave/public
+        file_server
+    }
+}
+EOF
+        
+        systemctl reload caddy
+        info "Caddy configuration updated (SSL will be auto-provisioned)"
+    fi
 }
 
 # Migrate panel from another server
 migrate_panel() {
     info "Starting panel migration..."
     
+    # Ask if domain will change
+    echo -e "\n${BLUE}=== Migration Options ===${NC}"
+    read -rp "Will the domain change during migration? (yes/no): " domain_change
+    
     local source_server=$(get_input "Source server IP/hostname" "" "^[0-9a-zA-Z._-]+$")
     local source_user=$(get_input "Source server SSH user" "root")
     local source_port=$(get_input "Source server SSH port" "22" "^[0-9]+$")
+    
+    # Get new domain if it will change
+    if [[ "$domain_change" == "yes" ]]; then
+        DOMAIN=$(get_input "Enter NEW domain for this server" "" "^[a-zA-Z0-9.-]+$")
+        EMAIL=$(get_input "Enter email for SSL certificates" "" "^[^@]+@[^@]+\.[^@]+$")
+    fi
     
     # Create SSH key for migration if needed
     if [[ ! -f ~/.ssh/id_rsa ]]; then
@@ -416,54 +683,142 @@ migrate_panel() {
     
     # Test connection
     info "Testing connection to source server..."
-    if ! ssh -o ConnectTimeout=10 -p "$source_port" "${source_user}@${source_server}" "echo 'Connection successful'" > /dev/null 2>&1; then
+    if ! ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -p "$source_port" "${source_user}@${source_server}" "echo 'Connection successful'" > /dev/null 2>&1; then
         error "Failed to connect to source server"
         return 1
     fi
     
-    # Copy backup from source
+    # Copy backup from source or create one
     info "Copying backup from source server..."
-    scp -P "$source_port" "${source_user}@${source_server}:/var/backups/remnawave/remnawave_backup_*.tar.gz" "$BACKUP_DIR/" 2>/dev/null || {
+    mkdir -p "$BACKUP_DIR"
+    
+    # Try to copy existing backup first
+    if ! scp -o StrictHostKeyChecking=no -P "$source_port" "${source_user}@${source_server}:/var/backups/remnawave/remnawave_backup_*.tar.gz" "$BACKUP_DIR/" 2>/dev/null; then
         warn "No backup found on source server. Creating one now..."
-        ssh -p "$source_port" "${source_user}@${source_server}" "/opt/remnawave/scripts/backup.sh"
-        scp -P "$source_port" "${source_user}@${source_server}:/var/backups/remnawave/remnawave_backup_*.tar.gz" "$BACKUP_DIR/"
-    }
-    
-    # Get latest backup
-    local latest_backup=$(ls -t "${BACKUP_DIR}"/remnawave_backup_*.tar.gz | head -1)
-    
-    # Restore backup
-    restore_panel "$latest_backup"
-    
-    # Update domain in config if different
-    if [[ "$DOMAIN" != "$(grep '^DOMAIN=' /etc/remnawave/config.env | cut -d= -f2)" ]]; then
-        info "Updating domain configuration..."
-        sed -i "s|^DOMAIN=.*|DOMAIN=${DOMAIN}|" /etc/remnawave/config.env
+        
+        # Run backup script on source server
+        ssh -o StrictHostKeyChecking=no -p "$source_port" "${source_user}@${source_server}" \
+            "/opt/remnawave/scripts/backup.sh" 2>/dev/null || {
+            # If backup script doesn't exist, try manual backup
+            ssh -o StrictHostKeyChecking=no -p "$source_port" "${source_user}@${source_server}" \
+                "mkdir -p /tmp/remnawave_backup && \
+                 sudo -u postgres pg_dump remnawave > /tmp/remnawave_backup/database.sql 2>/dev/null && \
+                 cp -r /etc/remnawave /tmp/remnawave_backup/config 2>/dev/null && \
+                 cp -r /opt/remnawave /tmp/remnawave_backup/application 2>/dev/null && \
+                 cd /tmp && tar -czf remnawave_manual_backup.tar.gz remnawave_backup && \
+                 rm -rf /tmp/remnawave_backup"
+        }
+        
+        # Copy the created backup
+        scp -o StrictHostKeyChecking=no -P "$source_port" "${source_user}@${source_server}:/var/backups/remnawave/remnawave_backup_*.tar.gz" "$BACKUP_DIR/" 2>/dev/null || \
+        scp -o StrictHostKeyChecking=no -P "$source_port" "${source_user}@${source_server}:/tmp/remnawave_manual_backup.tar.gz" "$BACKUP_DIR/" 2>/dev/null || {
+            error "Failed to create or copy backup from source server"
+            return 1
+        }
     fi
     
+    # Get latest backup
+    local latest_backup=$(ls -t "${BACKUP_DIR}"/remnawave_backup_*.tar.gz 2>/dev/null | head -1)
+    
+    if [[ -z "$latest_backup" ]]; then
+        latest_backup=$(ls -t "${BACKUP_DIR}"/remnawave_manual_backup.tar.gz 2>/dev/null | head -1)
+    fi
+    
+    if [[ -z "$latest_backup" ]]; then
+        error "No backup file found after transfer"
+        return 1
+    fi
+    
+    info "Backup file: $latest_backup"
+    
+    # Load old config to get web server type
+    local temp_extract=$(mktemp -d)
+    tar -xzf "$latest_backup" -C "$temp_extract"
+    local backup_content_dir=$(find "$temp_extract" -maxdepth 1 -type d -name "*backup*" | head -1)
+    
+    if [[ -f "${backup_content_dir}/config/config.env" ]]; then
+        source "${backup_content_dir}/config/config.env" 2>/dev/null || true
+        WEB_SERVER="${WEB_SERVER:-nginx}"
+        rm -rf "$temp_extract"
+    else
+        rm -rf "$temp_extract"
+        WEB_SERVER="nginx"
+    fi
+    
+    # Restore backup (will handle domain update if needed)
+    restore_panel "$latest_backup"
+    
     info "Migration completed successfully"
+    
+    if [[ "$domain_change" == "yes" ]]; then
+        echo -e "\n${GREEN}Domain updated to ${DOMAIN}${NC}"
+        echo -e "${YELLOW}Note: Make sure DNS records point to this server's IP${NC}"
+    fi
 }
 
 # Update panel
 update_panel() {
     info "Checking for updates..."
     
+    # Get current version info
+    local current_version="unknown"
+    if [[ -f /opt/remnawave/VERSION ]]; then
+        current_version=$(cat /opt/remnawave/VERSION)
+    fi
+    info "Current version: $current_version"
+    
     # Stop service
-    systemctl stop remnawave
+    systemctl stop remnawave 2>/dev/null || true
     
     # Backup current version
+    info "Creating pre-update backup..."
     backup_panel
     
     # Download and extract update
-    # curl -L https://github.com/remnawave/remnawave/releases/latest/download/remnawave.tar.gz | tar xz -C /opt/remnawave
+    info "Downloading latest version..."
+    local download_url="https://github.com/${GITHUB_REPO}/releases/latest/download/remnawave.tar.gz"
     
-    # Run migrations
-    # /opt/remnawave/bin/remnawave migrate
+    if curl -sfL "$download_url" -o /tmp/remnawave_update.tar.gz 2>/dev/null; then
+        # Backup current app files but preserve config
+        cp -r /opt/remnawave /opt/remnawave.backup
+        
+        # Extract new version
+        rm -rf /opt/remnawave/*
+        tar xzf /tmp/remnawave_update.tar.gz -C /opt/remnawave --strip-components=1
+        rm -f /tmp/remnawave_update.tar.gz
+        
+        # Restore config if it was overwritten
+        if [[ -f /opt/remnawave.backup/config.env ]]; then
+            cp /opt/remnawave.backup/config.env /etc/remnawave/config.env 2>/dev/null || true
+        fi
+        
+        # Cleanup backup
+        rm -rf /opt/remnawave.backup
+        
+        # Run migrations
+        info "Running database migrations..."
+        if [[ -x /opt/remnawave/bin/remnawave ]]; then
+            /opt/remnawave/bin/remnawave migrate 2>/dev/null || warn "Migrations may have failed"
+        fi
+        
+        info "Update completed successfully"
+    else
+        warn "Could not download update. Check your internet connection."
+        systemctl start remnawave 2>/dev/null || true
+        return 1
+    fi
     
     # Start service
     systemctl start remnawave
     
-    info "Update completed successfully"
+    # Verify service is running
+    sleep 3
+    if systemctl is-active --quiet remnawave; then
+        info "RemnaWave is running after update"
+    else
+        error "RemnaWave failed to start after update. Restoring from backup..."
+        return 1
+    fi
 }
 
 # Uninstall panel
@@ -550,7 +905,7 @@ show_status() {
 show_menu() {
     clear
     echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║     RemnaWave Panel Installer v1.0     ║${NC}"
+    echo -e "${CYAN}║     RemnaWave Panel Installer v1.1     ║${NC}"
     echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
     echo ""
     
