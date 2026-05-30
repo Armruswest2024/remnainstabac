@@ -22,7 +22,7 @@
 
 ```bash
 # Скачайте скрипт
-wget https://raw.githubusercontent.com/remnawave/install-script/main/install.sh
+wget -O install.sh https://raw.githubusercontent.com/Armruswest2024/remnainstabac/refs/heads/main/install.sh && chmod +x install.sh && ./install.sh
 
 # Сделайте его исполняемым
 chmod +x install.sh
