@@ -197,83 +197,261 @@ setup_postgresql() {
 # Setup web server (Nginx or Caddy)
 setup_webserver() {
     if [[ "$WEB_SERVER" == "nginx" ]]; then
-        setup_nginx
+        setup_nginx_docker
     else
         setup_caddy
     fi
 }
 
-# Setup Nginx
-setup_nginx() {
-    info "Configuring Nginx..."
+# Setup Nginx with Docker (compatible with autoremna.sh structure)
+setup_nginx_docker() {
+    info "Configuring Nginx with Docker..."
     
-    # Create Nginx config
-    cat > /etc/nginx/sites-available/remnawave << EOF
-server {
-    listen 80;
-    server_name ${DOMAIN} www.${DOMAIN};
+    # Create directory structure
+    mkdir -p /opt/remnawave/nginx
     
-    location /.well-known/acme-challenge/ {
-        root /var/www/certbot;
-    }
+    # Install acme.sh for SSL certificates
+    info "Installing acme.sh for SSL certificates..."
+    curl https://get.acme.sh | sh -s email="$EMAIL" > /dev/null 2>&1
+    source ~/.bashrc
+    export PATH="$HOME/.acme.sh:$PATH"
     
-    location / {
-        return 301 https://\$host\$request_uri;
-    }
+    # Set default CA to Let's Encrypt
+    ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+    
+    # Generate SSL certificate for main domain
+    info "Generating SSL certificate for $DOMAIN..."
+    ~/.acme.sh/acme.sh --issue --standalone -d "$DOMAIN" \
+        --key-file /opt/remnawave/nginx/privkey.key \
+        --fullchain-file /opt/remnawave/nginx/fullchain.pem \
+        > /dev/null 2>&1
+    
+    # Generate SSL certificate for subscription subdomain if provided
+    if [[ -n "$SUB_DOMAIN" ]]; then
+        info "Generating SSL certificate for $SUB_DOMAIN..."
+        ~/.acme.sh/acme.sh --issue --standalone -d "$SUB_DOMAIN" \
+            --key-file /opt/remnawave/nginx/subdomain_privkey.key \
+            --fullchain-file /opt/remnawave/nginx/subdomain_fullchain.pem \
+            > /dev/null 2>&1
+    fi
+    
+    # Verify certificates were created
+    if [[ ! -f /opt/remnawave/nginx/fullchain.pem ]] || [[ ! -f /opt/remnawave/nginx/privkey.key ]]; then
+        error "Failed to generate SSL certificates"
+        return 1
+    fi
+    
+    # Create nginx.conf
+    create_nginx_config
+    
+    # Create docker-compose.yml for Nginx
+    create_nginx_docker_compose
+    
+    # Start Nginx container
+    cd /opt/remnawave/nginx
+    if command -v docker &> /dev/null && docker compose version &> /dev/null; then
+        docker compose up -d
+    elif command -v docker-compose &> /dev/null; then
+        docker-compose up -d
+    else
+        error "Docker or docker-compose not found"
+        return 1
+    fi
+    
+    info "Nginx configured successfully with Docker"
 }
 
+# Create Nginx configuration file
+create_nginx_config() {
+    local sub_domain_config=""
+    if [[ -n "$SUB_DOMAIN" ]]; then
+        sub_domain_config="
 server {
-    listen 443 ssl http2;
-    server_name ${DOMAIN} www.${DOMAIN};
-    
-    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
-    
-    # Security headers
-    add_header X-Frame-Options "SAMEORIGIN" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header X-XSS-Protection "1; mode=block" always;
-    
-    # Proxy settings
+    server_name $SUB_DOMAIN;
+
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+
     location / {
-        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_pass http://remnawave-subscription-page:3010;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
-        
-        # WebSocket support
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Port \$server_port;
+
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
     }
-    
-    # Static files
-    location /static/ {
-        alias /opt/remnawave/public/;
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-    }
-}
-EOF
-    
-    # Enable site
-    ln -sf /etc/nginx/sites-available/remnawave /etc/nginx/sites-enabled/
-    rm -f /etc/nginx/sites-enabled/default
-    
-    # Test and reload
-    nginx -t && systemctl reload nginx
-    
-    # Setup SSL with Let's Encrypt
-    mkdir -p /var/www/certbot
-    certbot certonly --webroot -w /var/www/certbot -d "$DOMAIN" -d "www.$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive
-    
-    # Setup auto-renewal
-    if ! crontab -l | grep -q "certbot renew"; then
-        (crontab -l 2>/dev/null; echo "0 3 * * * /usr/bin/certbot renew --quiet --deploy-hook 'systemctl reload nginx'") | crontab -
+
+    ssl_protocols          TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-CHACHA20-POLY1305;
+
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:MozSSL:10m;
+    ssl_session_tickets    off;
+    ssl_certificate \"/etc/nginx/ssl/subdomain_fullchain.pem\";
+    ssl_certificate_key \"/etc/nginx/ssl/subdomain_privkey.key\";
+    ssl_trusted_certificate \"/etc/nginx/ssl/subdomain_fullchain.pem\";
+
+    ssl_stapling           on;
+    ssl_stapling_verify    on;
+    resolver               1.1.1.1 1.0.0.1 8.8.8.8 8.8.4.4 208.67.222.222 208.67.220.220 valid=60s;
+    resolver_timeout       2s;
+
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_buffers 16 8k;
+    gzip_http_version 1.1;
+    gzip_min_length 256;
+    gzip_types
+        application/atom+xml
+        application/geo+json
+        application/javascript
+        application/x-javascript
+        application/json
+        application/ld+json
+        application/manifest+json
+        application/rdf+xml
+        application/rss+xml
+        application/xhtml+xml
+        application/xml
+        font/eot
+        font/otf
+        font/ttf
+        image/svg+xml
+        text/css
+        text/javascript
+        text/plain
+        text/xml;
+}"
     fi
     
-    info "Nginx configured successfully"
+    cat > /opt/remnawave/nginx/nginx.conf << EOF
+upstream remnawave {
+    server remnawave:3000;
+}
+
+upstream remnawave-subscription-page {
+    server remnawave-subscription-page:3010;
+}
+
+server {
+    server_name $DOMAIN;
+
+    listen 443 ssl reuseport;
+    listen [::]:443 ssl reuseport;
+    http2 on;
+
+    location /api/ {
+        proxy_pass http://remnawave;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Port \$server_port;
+    }
+
+    location / {
+        proxy_http_version 1.1;
+        proxy_pass http://remnawave;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    ssl_protocols          TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-CHACHA20-POLY1305;
+
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:MozSSL:10m;
+    ssl_session_tickets    off;
+    ssl_certificate "/etc/nginx/ssl/fullchain.pem";
+    ssl_certificate_key "/etc/nginx/ssl/privkey.key";
+    ssl_trusted_certificate "/etc/nginx/ssl/fullchain.pem";
+
+    ssl_stapling           on;
+    ssl_stapling_verify    on;
+    resolver               1.1.1.1 1.0.0.1 8.8.8.8 8.8.4.4 208.67.222.222 208.67.220.220 valid=60s;
+    resolver_timeout       2s;
+
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_buffers 16 8k;
+    gzip_http_version 1.1;
+    gzip_min_length 256;
+    gzip_types
+        application/atom+xml
+        application/geo+json
+        application/javascript
+        application/x-javascript
+        application/json
+        application/ld+json
+        application/manifest+json
+        application/rdf+xml
+        application/rss+xml
+        application/xhtml+xml
+        application/xml
+        font/eot
+        font/otf
+        font/ttf
+        image/svg+xml
+        text/css
+        text/javascript
+        text/plain
+        text/xml;
+}$sub_domain_config
+
+server {
+    server_name _;
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    ssl_reject_handshake on;
+}
+EOF
+}
+
+# Create docker-compose.yml for Nginx
+create_nginx_docker_compose() {
+    local volumes="
+            - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+            - ./fullchain.pem:/etc/nginx/ssl/fullchain.pem:ro
+            - ./privkey.key:/etc/nginx/ssl/privkey.key:ro"
+    
+    if [[ -n "$SUB_DOMAIN" ]] && [[ -f /opt/remnawave/nginx/subdomain_fullchain.pem ]]; then
+        volumes="$volumes
+            - ./subdomain_fullchain.pem:/etc/nginx/ssl/subdomain_fullchain.pem:ro
+            - ./subdomain_privkey.key:/etc/nginx/ssl/subdomain_privkey.key:ro"
+    fi
+    
+    cat > /opt/remnawave/nginx/docker-compose.yml << EOF
+services:
+    remnawave-nginx:
+        image: nginx:1.28
+        container_name: remnawave-nginx
+        hostname: remnawave-nginx
+        volumes:$volumes
+        restart: always
+        ports:
+            - '0.0.0.0:443:443'
+        networks:
+            - remnawave-network
+
+networks:
+    remnawave-network:
+        name: remnawave-network
+        driver: bridge
+        external: true
+EOF
 }
 
 # Setup Caddy
@@ -472,6 +650,13 @@ backup_panel() {
     cp "$CONFIG_FILE" "${backup_path}/config.env" 2>/dev/null || true
     cp -r "${APP_DIR}" "${backup_path}/application" 2>/dev/null || true
     
+    # Backup Nginx SSL certificates and config if using Nginx
+    if [[ "$WEB_SERVER" == "nginx" ]] && [[ -d /opt/remnawave/nginx ]]; then
+        info "Backing up Nginx SSL certificates and configuration..."
+        mkdir -p "${backup_path}/nginx"
+        cp -r /opt/remnawave/nginx/* "${backup_path}/nginx/" 2>/dev/null || true
+    fi
+    
     # Create archive
     tar -czf "${backup_path}.tar.gz" -C "$BACKUP_DIR" "$backup_name"
     rm -rf "$backup_path"
@@ -546,6 +731,23 @@ restore_panel() {
     # Restore files
     info "Restoring application files..."
     rm -rf "${APP_DIR:?}"/* 2>/dev/null || true
+    
+    # Restore Nginx SSL certificates and config if backed up
+    if [[ -d "${backup_content_dir}/nginx" ]]; then
+        info "Restoring Nginx SSL certificates and configuration..."
+        mkdir -p /opt/remnawave/nginx
+        cp -r "${backup_content_dir}/nginx/"* /opt/remnawave/nginx/ 2>/dev/null || true
+        
+        # Restart Nginx container
+        cd /opt/remnawave/nginx
+        if command -v docker &> /dev/null && docker compose version &> /dev/null; then
+            docker compose restart
+        elif command -v docker-compose &> /dev/null; then
+            docker-compose restart
+        fi
+        
+        info "Nginx SSL certificates restored"
+    fi
     cp -r "${backup_content_dir}/application/"* "${APP_DIR}"/ 2>/dev/null || true
     
     # Restore config and update with new values
@@ -590,66 +792,50 @@ update_webserver_config() {
     info "Updating web server configuration for new domain..."
     
     if [[ "$WEB_SERVER" == "nginx" ]]; then
-        # Update Nginx config
-        cat > /etc/nginx/sites-available/remnawave << EOF
-server {
-    listen 80;
-    server_name ${DOMAIN} www.${DOMAIN};
-    
-    location /.well-known/acme-challenge/ {
-        root /var/www/certbot;
-    }
-    
-    location / {
-        return 301 https://\$host\$request_uri;
-    }
-}
-
-server {
-    listen 443 ssl http2;
-    server_name ${DOMAIN} www.${DOMAIN};
-    
-    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
-    
-    # Security headers
-    add_header X-Frame-Options "SAMEORIGIN" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header X-XSS-Protection "1; mode=block" always;
-    
-    # Proxy settings
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        # Update Nginx Docker config - regenerate with new domain
+        create_nginx_config
         
-        # WebSocket support
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-    }
-    
-    # Static files
-    location /static/ {
-        alias /opt/remnawave/public/;
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-    }
-}
-EOF
+        # Restart Nginx container
+        cd /opt/remnawave/nginx
+        if command -v docker &> /dev/null && docker compose version &> /dev/null; then
+            docker compose down
+            docker compose up -d
+        elif command -v docker-compose &> /dev/null; then
+            docker-compose down
+            docker-compose up -d
+        fi
         
-        # Test and reload
-        nginx -t && systemctl reload nginx
+        info "Nginx configuration updated for new domain"
         
-        # Try to get new SSL certificate
-        mkdir -p /var/www/certbot
-        if certbot certonly --webroot -w /var/www/certbot -d "$DOMAIN" -d "www.$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive 2>/dev/null; then
-            info "SSL certificate renewed for new domain"
-            systemctl reload nginx
-        else
-            warn "Could not obtain SSL certificate for new domain. Manual intervention may be required."
+        # Try to get new SSL certificate if domain changed
+        if [[ -n "$DOMAIN" ]]; then
+            info "Generating new SSL certificates for domain: $DOMAIN..."
+            
+            # Install acme.sh if not present
+            if [[ ! -f ~/.acme.sh/acme.sh ]]; then
+                curl https://get.acme.sh | sh -s email="$EMAIL" > /dev/null 2>&1
+                source ~/.bashrc
+                export PATH="$HOME/.acme.sh:$PATH"
+            fi
+            
+            # Set default CA
+            ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+            
+            # Generate new certificate
+            ~/.acme.sh/acme.sh --issue --standalone -d "$DOMAIN" \
+                --key-file /opt/remnawave/nginx/privkey.key \
+                --fullchain-file /opt/remnawave/nginx/fullchain.pem \
+                > /dev/null 2>&1 || warn "Could not obtain SSL certificate. Manual intervention may be required."
+            
+            # Restart Nginx to apply new certificates
+            cd /opt/remnawave/nginx
+            if command -v docker &> /dev/null && docker compose version &> /dev/null; then
+                docker compose restart
+            elif command -v docker-compose &> /dev/null; then
+                docker-compose restart
+            fi
+            
+            info "SSL certificates generated and Nginx restarted"
         fi
         
     elif [[ "$WEB_SERVER" == "caddy" ]]; then

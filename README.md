@@ -117,11 +117,12 @@ sudo ./install.sh
 - Дамп PostgreSQL базы данных
 - Конфигурационный файл (`.env` в `/opt/remnawave/`)
 - Файлы приложения (`/opt/remnawave/`)
+- SSL сертификаты и конфиг Nginx (если используется Nginx)
 
 **Автоматические бэкапы:**
 - Скрипт настраивает cron job на ежедневный бэкап в 3:00
 - Хранятся последние 7 бэкапов
-- Расположение: `/var/backups/remnawave/`
+- Расположение: `/opt/remnawave/backups/`
 
 **Ручной бэкап:**
 ```bash
@@ -174,7 +175,7 @@ sudo ./install.sh
 
 **Сохраняется:**
 - Логи установки (опционально)
-- Бэкапы в `/var/backups/remnawave/`
+- Бэкапы в `/opt/remnawave/backups/`
 
 ## 🔧 Технические детали
 
@@ -182,6 +183,13 @@ sudo ./install.sh
 
 ```
 /opt/remnawave/           # Приложение и конфигурация
+├── nginx/                # Nginx конфигурация и SSL сертификаты (если выбран Nginx)
+│   ├── nginx.conf        # Конфигурация Nginx
+│   ├── docker-compose.yml # Docker Compose файл для Nginx
+│   ├── fullchain.pem     # SSL сертификат для основного домена
+│   ├── privkey.key       # Приватный ключ для основного домена
+│   ├── subdomain_fullchain.pem  # SSL сертификат для поддомена подписки
+│   └── subdomain_privkey.key    # Приватный ключ для поддомена подписки
 ├── .env                  # Основной конфиг (DATABASE_URL, секреты, домен)
 ├── bin/                  # Исполняемые файлы
 │   └── remnawave         # Главный бинарник
@@ -189,9 +197,8 @@ sudo ./install.sh
 ├── logs/                 # Логи приложения
 └── scripts/              # Скрипты утилит
     └── backup.sh         # Скрипт бэкапа
-
-/var/backups/remnawave/   # Бэкапы
-└── remnawave_backup_*.tar.gz
+/opt/remnawave/backups/              # Бэкапы панели
+    └── remnawave_backup_*.tar.gz
 
 /var/log/
 ├── remnawave_install.log # Лог установки
