@@ -729,19 +729,20 @@ convert_nginx_to_caddy() {
         domains="$DOMAIN"
     fi
     
-    # Create Caddyfile
-    cat > "$caddyfile" << EOF
-$(echo $domains | tr ' ' '\n' | while read domain; do
-    echo "$domain {"
-    echo "    reverse_proxy remnawave:3000"
-    echo "    tls {"
-    echo "        cert /opt/remnawave/nginx/fullchain.pem"
-    echo "        key /opt/remnawave/nginx/privkey.key"
-    echo "    }"
-    echo "}"
-    echo ""
-done)
+    # Create Caddyfile with proper variable expansion
+    > "$caddyfile"
+    for domain in $domains; do
+        cat >> "$caddyfile" << EOF
+$domain {
+    reverse_proxy remnawave:3000
+    tls {
+        cert /opt/remnawave/nginx/fullchain.pem
+        key /opt/remnawave/nginx/privkey.key
+    }
+}
+
 EOF
+    done
     
     # Check for subscription page subdomain
     if grep -q "sub" "$nginx_conf" 2>/dev/null; then
@@ -775,7 +776,10 @@ convert_caddy_to_nginx() {
         domains="$DOMAIN"
     fi
     
-    # Create nginx.conf with proper paths
+    # Update global DOMAIN variable for create_nginx_config
+    DOMAIN="$domains"
+    
+    # Create nginx.conf with proper paths using current global variables
     create_nginx_config
     
     # Copy SSL certificates from Caddy data directory if they exist
@@ -849,7 +853,7 @@ restore_panel() {
     
     info "Restoring panel from backup..."
     
-    # Stop services
+    # Stop services first before any restoration
     systemctl stop remnawave 2>/dev/null || true
     
     # Extract backup
@@ -913,37 +917,56 @@ restore_panel() {
         PGPASSWORD="$restore_db_password" sudo -u postgres psql -d remnawave < "${backup_content_dir}/database.sql"
     fi
     
-    # Restore files
-    info "Restoring application files..."
-    # Сохраняем структуру директорий, но очищаем содержимое
-    rm -rf "${APP_DIR:?}/data"/* 2>/dev/null || true
-    rm -rf "${APP_DIR:?}/db"/* 2>/dev/null || true
-    
-    # Check if web server conversion is needed
+    # Check if web server conversion is needed BEFORE restoring files
+    local needs_conversion=false
     if [[ "$source_web_server" != "$WEB_SERVER" ]]; then
+        needs_conversion=true
         info "Web server change detected: ${source_web_server} -> ${WEB_SERVER}"
         
         # Restore source web server files first for conversion
         if [[ "$source_web_server" == "nginx" ]] && [[ -d "${backup_content_dir}/nginx" ]]; then
             info "Restoring source Nginx files for conversion..."
             mkdir -p /opt/remnawave/nginx
-            cp -r "${backup_content_dir}/nginx/"* /opt/remnawave/nginx/ 2>/dev/null || true
+            cp -r "${backup_content_dir}/nginx/"* /opt/remnawave/nginx/
         elif [[ "$source_web_server" == "caddy" ]] && [[ -d "${backup_content_dir}/caddy" ]]; then
             info "Restoring source Caddy files for conversion..."
             mkdir -p /opt/remnawave/caddy
-            cp -r "${backup_content_dir}/caddy/"* /opt/remnawave/caddy/ 2>/dev/null || true
+            cp -r "${backup_content_dir}/caddy/"* /opt/remnawave/caddy/
         fi
         
         # Perform conversion
         handle_webserver_conversion "$source_web_server" "$WEB_SERVER"
-    else
-        # No conversion needed, restore normally
+    fi
+    
+    # Restore application data directories
+    info "Restoring application files..."
+    mkdir -p "${APP_DIR}/data" "${APP_DIR}/db"
+    rm -rf "${APP_DIR:?}/data"/* 2>/dev/null || true
+    rm -rf "${APP_DIR:?}/db"/* 2>/dev/null || true
+    
+    if [[ -d "${backup_content_dir}/data" ]]; then
+        cp -r "${backup_content_dir}/data/"* "${APP_DIR}/data/"
+    fi
+    if [[ -d "${backup_content_dir}/db" ]]; then
+        cp -r "${backup_content_dir}/db/"* "${APP_DIR}/db/"
+    fi
+    if [[ -f "${backup_content_dir}/docker-compose.yml" ]]; then
+        cp "${backup_content_dir}/docker-compose.yml" "${APP_DIR}/"
+    fi
+    if [[ -f "${backup_content_dir}/app_env" ]]; then
+        cp "${backup_content_dir}/app_env" "${APP_DIR}/.env"
+    elif [[ -f "${backup_content_dir}/config.env" ]]; then
+        cp "${backup_content_dir}/config.env" "${APP_DIR}/.env"
+    fi
+    
+    # Restore web server configs if no conversion was needed
+    if [[ "$needs_conversion" == "false" ]]; then
         if [[ "$WEB_SERVER" == "nginx" ]] && [[ -d "${backup_content_dir}/nginx" ]]; then
             info "Restoring Nginx SSL certificates and configuration..."
             mkdir -p /opt/remnawave/nginx
-            cp -r "${backup_content_dir}/nginx/"* /opt/remnawave/nginx/ 2>/dev/null || true
+            cp -r "${backup_content_dir}/nginx/"* /opt/remnawave/nginx/
             
-            # Restart Nginx container
+            # Restart Nginx container after config is restored
             cd /opt/remnawave/nginx
             if command -v docker &> /dev/null && docker compose version &> /dev/null; then
                 docker compose restart
@@ -955,29 +978,13 @@ restore_panel() {
         elif [[ "$WEB_SERVER" == "caddy" ]] && [[ -d "${backup_content_dir}/caddy" ]]; then
             info "Restoring Caddy configuration..."
             mkdir -p /opt/remnawave/caddy
-            cp -r "${backup_content_dir}/caddy/"* /opt/remnawave/caddy/ 2>/dev/null || true
+            cp -r "${backup_content_dir}/caddy/"* /opt/remnawave/caddy/
             
-            # Reload Caddy
+            # Reload Caddy after config is restored
             systemctl reload caddy 2>/dev/null || true
             
             info "Caddy configuration restored"
         fi
-    fi
-    
-    # Восстанавливаем данные приложения
-    if [[ -d "${backup_content_dir}/data" ]]; then
-        cp -r "${backup_content_dir}/data/"* "${APP_DIR}/data/" 2>/dev/null || true
-    fi
-    if [[ -d "${backup_content_dir}/db" ]]; then
-        cp -r "${backup_content_dir}/db/"* "${APP_DIR}/db/" 2>/dev/null || true
-    fi
-    if [[ -f "${backup_content_dir}/docker-compose.yml" ]]; then
-        cp "${backup_content_dir}/docker-compose.yml" "${APP_DIR}/" 2>/dev/null || true
-    fi
-    if [[ -f "${backup_content_dir}/app_env" ]]; then
-        cp "${backup_content_dir}/app_env" "${APP_DIR}/.env" 2>/dev/null || true
-    elif [[ -f "${backup_content_dir}/config.env" ]]; then
-        cp "${backup_content_dir}/config.env" "${APP_DIR}/.env" 2>/dev/null || true
     fi
     
     # Restore config and update with new values
@@ -1008,10 +1015,10 @@ restore_panel() {
         sed -i "s|DATABASE_URL=.*|DATABASE_URL=postgresql://remnawave:${DB_PASSWORD}@localhost:5432/remnawave|" "$CONFIG_FILE"
     fi
     
-    # Cleanup
+    # Cleanup temp directory
     rm -rf "$temp_dir"
     
-    # Start services
+    # Start services AFTER all files and configs are restored
     systemctl start remnawave 2>/dev/null || true
     
     info "Panel restored successfully"
