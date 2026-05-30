@@ -641,20 +641,66 @@ backup_panel() {
     
     mkdir -p "$backup_path"
     
+    # Определяем текущий веб-сервер по наличию директорий и контейнеров
+    local current_web=""
+    if [[ -d "/opt/remnawave/caddy" ]]; then
+        current_web="caddy"
+    elif [[ -d "/opt/remnawave/nginx" ]]; then
+        current_web="nginx"
+    else
+        # Фолбэк: проверяем запущенные контейнеры
+        if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "caddy"; then
+            current_web="caddy"
+        elif docker ps --format '{{.Names}}' 2>/dev/null | grep -q "nginx"; then
+            current_web="nginx"
+        fi
+    fi
+
+    if [[ -z "$current_web" ]]; then
+        warn "Не удалось определить тип веб-сервера. Бэкап может быть неполным."
+        current_web="unknown"
+    fi
+
+    info "Обнаружен веб-сервер: $current_web"
+    
+    # Сохраняем тип веб-сервера в метаданных
+    echo "$current_web" > "${backup_path}/web_server_type"
+
     # Backup database
     info "Backing up database..."
-    PGPASSWORD="$DB_PASSWORD" pg_dump -U remnawave -h localhost remnawave > "${backup_path}/database.sql"
+    if PGPASSWORD="$DB_PASSWORD" pg_dump -U remnawave -h localhost remnawave > "${backup_path}/database.sql" 2>/dev/null; then
+        info "Database backup completed"
+    else
+        warn "Database backup failed or database is not accessible"
+    fi
     
     # Backup configuration
     info "Backing up configuration..."
     cp "$CONFIG_FILE" "${backup_path}/config.env" 2>/dev/null || true
-    cp -r "${APP_DIR}" "${backup_path}/application" 2>/dev/null || true
+    cp -r "${APP_DIR}/data" "${backup_path}/data" 2>/dev/null || true
+    cp -r "${APP_DIR}/db" "${backup_path}/db" 2>/dev/null || true
+    cp "${APP_DIR}/docker-compose.yml" "${backup_path}/docker-compose.yml" 2>/dev/null || true
+    cp "${APP_DIR}/.env" "${backup_path}/app_env" 2>/dev/null || true
     
-    # Backup Nginx SSL certificates and config if using Nginx
-    if [[ "$WEB_SERVER" == "nginx" ]] && [[ -d /opt/remnawave/nginx ]]; then
-        info "Backing up Nginx SSL certificates and configuration..."
-        mkdir -p "${backup_path}/nginx"
-        cp -r /opt/remnawave/nginx/* "${backup_path}/nginx/" 2>/dev/null || true
+    # Backup web server configs based on detected type
+    if [[ "$current_web" == "nginx" ]]; then
+        if [[ -d "/opt/remnawave/nginx" ]]; then
+            info "Backing up Nginx SSL certificates and configuration..."
+            cp -r /opt/remnawave/nginx "${backup_path}/nginx" 2>/dev/null || true
+        fi
+    elif [[ "$current_web" == "caddy" ]]; then
+        if [[ -d "/opt/remnawave/caddy" ]]; then
+            info "Backing up Caddy configuration and data..."
+            cp -r /opt/remnawave/caddy "${backup_path}/caddy" 2>/dev/null || true
+        fi
+    else
+        # Если неизвестно, копируем обе директории если они существуют
+        if [[ -d "/opt/remnawave/nginx" ]]; then
+            cp -r /opt/remnawave/nginx "${backup_path}/nginx" 2>/dev/null || true
+        fi
+        if [[ -d "/opt/remnawave/caddy" ]]; then
+            cp -r /opt/remnawave/caddy "${backup_path}/caddy" 2>/dev/null || true
+        fi
     fi
     
     # Create archive
@@ -662,7 +708,7 @@ backup_panel() {
     rm -rf "$backup_path"
     
     # Cleanup old backups (keep last 7)
-    ls -t "${BACKUP_DIR}"/remnawave_backup_*.tar.gz | tail -n +8 | xargs -r rm
+    ls -t "${BACKUP_DIR}"/remnawave_backup_*.tar.gz 2>/dev/null | tail -n +8 | xargs -r rm
     
     info "Backup created: ${backup_path}.tar.gz"
     echo "${backup_path}.tar.gz"
@@ -824,10 +870,23 @@ restore_panel() {
     local restore_db_password=""
     local source_web_server="nginx"
     
-    if [[ -f "$old_config" ]]; then
+    # Сначала пытаемся прочитать тип веб-сервера из файла метаданных
+    if [[ -f "${backup_content_dir}/web_server_type" ]]; then
+        source_web_server=$(cat "${backup_content_dir}/web_server_type")
+        info "Веб-сервер в бэкапе (из метаданных): $source_web_server"
+    elif [[ -f "$old_config" ]]; then
         source "$old_config" 2>/dev/null || true
         restore_db_password="$DB_PASSWORD"
         source_web_server="${WEB_SERVER:-nginx}"
+        info "Веб-сервер в бэкапе (из конфига): $source_web_server"
+    else
+        # Пытаемся определить по наличию директорий в бэкапе
+        if [[ -d "${backup_content_dir}/caddy" ]]; then
+            source_web_server="caddy"
+        elif [[ -d "${backup_content_dir}/nginx" ]]; then
+            source_web_server="nginx"
+        fi
+        info "Веб-сервер в бэкапе (определен автоматически): $source_web_server"
     fi
     
     # If we couldn't get password from backup, use current or generate new
@@ -856,7 +915,9 @@ restore_panel() {
     
     # Restore files
     info "Restoring application files..."
-    rm -rf "${APP_DIR:?}"/* 2>/dev/null || true
+    # Сохраняем структуру директорий, но очищаем содержимое
+    rm -rf "${APP_DIR:?}/data"/* 2>/dev/null || true
+    rm -rf "${APP_DIR:?}/db"/* 2>/dev/null || true
     
     # Check if web server conversion is needed
     if [[ "$source_web_server" != "$WEB_SERVER" ]]; then
@@ -903,7 +964,21 @@ restore_panel() {
         fi
     fi
     
-    cp -r "${backup_content_dir}/application/"* "${APP_DIR}"/ 2>/dev/null || true
+    # Восстанавливаем данные приложения
+    if [[ -d "${backup_content_dir}/data" ]]; then
+        cp -r "${backup_content_dir}/data/"* "${APP_DIR}/data/" 2>/dev/null || true
+    fi
+    if [[ -d "${backup_content_dir}/db" ]]; then
+        cp -r "${backup_content_dir}/db/"* "${APP_DIR}/db/" 2>/dev/null || true
+    fi
+    if [[ -f "${backup_content_dir}/docker-compose.yml" ]]; then
+        cp "${backup_content_dir}/docker-compose.yml" "${APP_DIR}/" 2>/dev/null || true
+    fi
+    if [[ -f "${backup_content_dir}/app_env" ]]; then
+        cp "${backup_content_dir}/app_env" "${APP_DIR}/.env" 2>/dev/null || true
+    elif [[ -f "${backup_content_dir}/config.env" ]]; then
+        cp "${backup_content_dir}/config.env" "${APP_DIR}/.env" 2>/dev/null || true
+    fi
     
     # Restore config and update with new values
     info "Restoring configuration..."
