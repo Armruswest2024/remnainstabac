@@ -21,8 +21,15 @@
 ### Установка
 
 ```bash
+# Установка одной командой (рекомендуется)
+wget -O install.sh https://raw.githubusercontent.com/Armruswest2024/remnainstabac/refs/heads/main/install.sh && chmod +x install.sh && sudo ./install.sh
+```
+
+Или по шагам:
+
+```bash
 # Скачайте скрипт
-wget -O install.sh https://raw.githubusercontent.com/Armruswest2024/remnainstabac/refs/heads/main/install.sh && chmod +x install.sh && ./install.sh
+wget -O install.sh https://raw.githubusercontent.com/Armruswest2024/remnainstabac/refs/heads/main/install.sh
 
 # Сделайте его исполняемым
 chmod +x install.sh

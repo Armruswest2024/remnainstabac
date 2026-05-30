@@ -160,11 +160,21 @@ setup_postgresql() {
         DB_PASSWORD=$(generate_secret)
     fi
     
-    # Create database and user
-    sudo -u postgres psql -c "CREATE DATABASE remnawave;" 2>/dev/null || true
-    sudo -u postgres psql -c "CREATE USER remnawave WITH PASSWORD '${DB_PASSWORD}';" 2>/dev/null || true
-    sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE remnawave TO remnawave;" 2>/dev/null || true
-    sudo -u postgres psql -c "ALTER DATABASE remnawave OWNER TO remnawave;" 2>/dev/null || true
+    # Create database and user with proper error handling
+    if ! sudo -u postgres psql -c "CREATE DATABASE remnawave;" 2>&1 | tee -a "$LOG_FILE"; then
+        warn "Database creation may have failed (might already exist)"
+    fi
+    if ! sudo -u postgres psql -c "CREATE USER remnawave WITH PASSWORD '${DB_PASSWORD}';" 2>&1 | tee -a "$LOG_FILE"; then
+        warn "User creation may have failed (might already exist)"
+    fi
+    sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE remnawave TO remnawave;" || {
+        error "Failed to grant privileges"
+        return 1
+    }
+    sudo -u postgres psql -c "ALTER DATABASE remnawave OWNER TO remnawave;" || {
+        error "Failed to set database owner"
+        return 1
+    }
     
     # Configure pg_hba.conf for local connections
     local pg_hba_file=""
@@ -428,10 +438,10 @@ ExecReload=/bin/kill -HUP \$MAINPID
 Restart=on-failure
 RestartSec=5s
 
-# Security hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
+# Security hardening (commented out to prevent conflicts with application)
+# NoNewPrivileges=true
+# ProtectSystem=strict
+# ProtectHome=true
 ReadWritePaths=/opt/remnawave /var/log/remnawave
 
 [Install]
@@ -518,11 +528,12 @@ restore_panel() {
         fi
     fi
     
-    # Restore database
+    # Restore database - terminate active connections first
     info "Restoring database..."
+    sudo -u postgres psql -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'remnawave' AND pid <> pg_backend_pid();" 2>/dev/null || true
     sudo -u postgres psql -c "DROP DATABASE IF EXISTS remnawave;" 2>/dev/null || true
-    sudo -u postgres psql -c "CREATE DATABASE remnawave;" 2>/dev/null || true
     sudo -u postgres psql -c "DROP USER IF EXISTS remnawave;" 2>/dev/null || true
+    sudo -u postgres psql -c "CREATE DATABASE remnawave;" 2>/dev/null || true
     sudo -u postgres psql -c "CREATE USER remnawave WITH PASSWORD '${restore_db_password}';" 2>/dev/null || true
     sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE remnawave TO remnawave;" 2>/dev/null || true
     sudo -u postgres psql -c "ALTER DATABASE remnawave OWNER TO remnawave;" 2>/dev/null || true
