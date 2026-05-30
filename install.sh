@@ -22,6 +22,7 @@ CONFIG_FILE="${APP_DIR}/.env"
 BACKUP_DIR="/opt/remnawave/backups"
 PG_VERSION=""
 DOMAIN=""
+SUB_DOMAIN=""
 EMAIL=""
 WEB_SERVER=""
 INSTALL_MODE=""
@@ -1464,6 +1465,12 @@ configure_installation() {
         echo -e "${YELLOW}Generated admin password: ${ADMIN_PASSWORD}${NC}"
         echo -e "${YELLOW}Please save this password!${NC}\n"
     fi
+
+    # Subscription subdomain (optional)
+    echo -e "\n=== Subscription Subdomain (Optional) ==="
+    echo "Enter a subdomain for subscription page (e.g., sub.example.com)"
+    echo "Leave empty to skip subdomain configuration"
+    SUB_DOMAIN=$(get_input "Subscription subdomain" "" "^[a-zA-Z0-9.-]*$")
     
     # Database password
     if [[ -z "$DB_PASSWORD" ]]; then
@@ -1478,6 +1485,9 @@ configure_installation() {
     echo "Domain: $DOMAIN"
     echo "Email: $EMAIL"
     echo "Web Server: $WEB_SERVER"
+    if [[ -n "$SUB_DOMAIN" ]]; then
+        echo "Subscription Subdomain: $SUB_DOMAIN"
+    fi
     echo "Admin Username: $ADMIN_USERNAME"
     echo "Database: PostgreSQL $PG_VERSION"
     echo ""
