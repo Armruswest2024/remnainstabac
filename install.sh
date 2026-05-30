@@ -668,6 +668,129 @@ backup_panel() {
     echo "${backup_path}.tar.gz"
 }
 
+# Convert Nginx config to Caddyfile
+convert_nginx_to_caddy() {
+    local nginx_conf="$1"
+    local caddyfile="/opt/remnawave/caddy/Caddyfile"
+    
+    info "Converting Nginx configuration to Caddyfile..."
+    
+    # Extract domains from nginx config
+    local domains=$(grep -oP 'server_name\s+\K[^;]+' "$nginx_conf" 2>/dev/null | tr -d ' ')
+    
+    if [[ -z "$domains" ]]; then
+        warn "Could not extract domains from Nginx config, using default"
+        domains="$DOMAIN"
+    fi
+    
+    # Create Caddyfile
+    cat > "$caddyfile" << EOF
+$(echo $domains | tr ' ' '\n' | while read domain; do
+    echo "$domain {"
+    echo "    reverse_proxy remnawave:3000"
+    echo "    tls {"
+    echo "        cert /opt/remnawave/nginx/fullchain.pem"
+    echo "        key /opt/remnawave/nginx/privkey.key"
+    echo "    }"
+    echo "}"
+    echo ""
+done)
+EOF
+    
+    # Check for subscription page subdomain
+    if grep -q "sub" "$nginx_conf" 2>/dev/null; then
+        local subdomain=$(grep -oP 'server_name\s+\Ksub[^;]+' "$nginx_conf" 2>/dev/null | head -1 | tr -d ' ')
+        if [[ -n "$subdomain" ]]; then
+            cat >> "$caddyfile" << EOF
+$subdomain {
+    reverse_proxy remnawave-subscription-page:3010
+    tls {
+        cert /opt/remnawave/nginx/subdomain_fullchain.pem
+        key /opt/remnawave/nginx/subdomain_privkey.key
+    }
+}
+EOF
+        fi
+    fi
+    
+    info "Caddyfile created from Nginx config"
+}
+
+# Convert Caddyfile to Nginx config
+convert_caddy_to_nginx() {
+    local caddyfile="$1"
+    
+    info "Converting Caddyfile to Nginx configuration..."
+    
+    # Extract domains from Caddyfile
+    local domains=$(grep -oP '^[a-zA-Z0-9.-]+\s*\{' "$caddyfile" 2>/dev/null | sed 's/{//' | tr -d ' ')
+    
+    if [[ -z "$domains" ]]; then
+        domains="$DOMAIN"
+    fi
+    
+    # Create nginx.conf with proper paths
+    create_nginx_config
+    
+    # Copy SSL certificates from Caddy data directory if they exist
+    if [[ -d "/opt/remnawave/caddy/data" ]]; then
+        local cert_count=$(find /opt/remnawave/caddy/data -name "*.pem" 2>/dev/null | wc -l)
+        if [[ $cert_count -gt 0 ]]; then
+            info "Copying SSL certificates from Caddy data directory..."
+            mkdir -p /opt/remnawave/nginx
+            # Try to find and copy certificates
+            find /opt/remnawave/caddy/data -name "*.pem" -exec cp {} /opt/remnawave/nginx/ \; 2>/dev/null || true
+            find /opt/remnawave/caddy/data -name "*.key" -exec cp {} /opt/remnawave/nginx/ \; 2>/dev/null || true
+        fi
+    fi
+    
+    info "Nginx configuration created from Caddy setup"
+}
+
+# Handle web server conversion during migration
+handle_webserver_conversion() {
+    local source_web_server="$1"
+    local target_web_server="$2"
+    
+    if [[ "$source_web_server" == "$target_web_server" ]]; then
+        info "Web server type unchanged (${source_web_server}), skipping conversion"
+        return 0
+    fi
+    
+    info "Converting from ${source_web_server} to ${target_web_server}..."
+    
+    if [[ "$source_web_server" == "nginx" ]] && [[ "$target_web_server" == "caddy" ]]; then
+        # Backup old nginx config
+        if [[ -f /opt/remnawave/nginx/nginx.conf ]]; then
+            cp /opt/remnawave/nginx/nginx.conf /opt/remnawave/nginx/nginx.conf.backup.$(date +%Y%m%d%H%M%S)
+        fi
+        
+        # Convert nginx to caddy
+        convert_nginx_to_caddy "/opt/remnawave/nginx/nginx.conf"
+        
+        # Stop nginx containers
+        cd /opt/remnawave/nginx 2>/dev/null
+        docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
+        cd - > /dev/null
+        
+        info "Nginx converted to Caddy successfully"
+        
+    elif [[ "$source_web_server" == "caddy" ]] && [[ "$target_web_server" == "nginx" ]]; then
+        # Backup old caddyfile
+        if [[ -f /opt/remnawave/caddy/Caddyfile ]]; then
+            cp /opt/remnawave/caddy/Caddyfile /opt/remnawave/caddy/Caddyfile.backup.$(date +%Y%m%d%H%M%S)
+        fi
+        
+        # Convert caddy to nginx
+        convert_caddy_to_nginx "/opt/remnawave/caddy/Caddyfile"
+        
+        # Stop caddy
+        systemctl stop caddy 2>/dev/null || true
+        
+        info "Caddy converted to Nginx successfully"
+    fi
+}
+
 # Restore panel from backup
 restore_panel() {
     local backup_file="$1"
@@ -696,12 +819,15 @@ restore_panel() {
         return 1
     fi
     
-    # Load old config to get DB password if available
+    # Load old config to get DB password and web server type
     local old_config="${backup_content_dir}/config.env"
     local restore_db_password=""
+    local source_web_server="nginx"
+    
     if [[ -f "$old_config" ]]; then
         source "$old_config" 2>/dev/null || true
         restore_db_password="$DB_PASSWORD"
+        source_web_server="${WEB_SERVER:-nginx}"
     fi
     
     # If we couldn't get password from backup, use current or generate new
@@ -732,22 +858,51 @@ restore_panel() {
     info "Restoring application files..."
     rm -rf "${APP_DIR:?}"/* 2>/dev/null || true
     
-    # Restore Nginx SSL certificates and config if backed up
-    if [[ -d "${backup_content_dir}/nginx" ]]; then
-        info "Restoring Nginx SSL certificates and configuration..."
-        mkdir -p /opt/remnawave/nginx
-        cp -r "${backup_content_dir}/nginx/"* /opt/remnawave/nginx/ 2>/dev/null || true
+    # Check if web server conversion is needed
+    if [[ "$source_web_server" != "$WEB_SERVER" ]]; then
+        info "Web server change detected: ${source_web_server} -> ${WEB_SERVER}"
         
-        # Restart Nginx container
-        cd /opt/remnawave/nginx
-        if command -v docker &> /dev/null && docker compose version &> /dev/null; then
-            docker compose restart
-        elif command -v docker-compose &> /dev/null; then
-            docker-compose restart
+        # Restore source web server files first for conversion
+        if [[ "$source_web_server" == "nginx" ]] && [[ -d "${backup_content_dir}/nginx" ]]; then
+            info "Restoring source Nginx files for conversion..."
+            mkdir -p /opt/remnawave/nginx
+            cp -r "${backup_content_dir}/nginx/"* /opt/remnawave/nginx/ 2>/dev/null || true
+        elif [[ "$source_web_server" == "caddy" ]] && [[ -d "${backup_content_dir}/caddy" ]]; then
+            info "Restoring source Caddy files for conversion..."
+            mkdir -p /opt/remnawave/caddy
+            cp -r "${backup_content_dir}/caddy/"* /opt/remnawave/caddy/ 2>/dev/null || true
         fi
         
-        info "Nginx SSL certificates restored"
+        # Perform conversion
+        handle_webserver_conversion "$source_web_server" "$WEB_SERVER"
+    else
+        # No conversion needed, restore normally
+        if [[ "$WEB_SERVER" == "nginx" ]] && [[ -d "${backup_content_dir}/nginx" ]]; then
+            info "Restoring Nginx SSL certificates and configuration..."
+            mkdir -p /opt/remnawave/nginx
+            cp -r "${backup_content_dir}/nginx/"* /opt/remnawave/nginx/ 2>/dev/null || true
+            
+            # Restart Nginx container
+            cd /opt/remnawave/nginx
+            if command -v docker &> /dev/null && docker compose version &> /dev/null; then
+                docker compose restart
+            elif command -v docker-compose &> /dev/null; then
+                docker-compose restart
+            fi
+            
+            info "Nginx SSL certificates restored"
+        elif [[ "$WEB_SERVER" == "caddy" ]] && [[ -d "${backup_content_dir}/caddy" ]]; then
+            info "Restoring Caddy configuration..."
+            mkdir -p /opt/remnawave/caddy
+            cp -r "${backup_content_dir}/caddy/"* /opt/remnawave/caddy/ 2>/dev/null || true
+            
+            # Reload Caddy
+            systemctl reload caddy 2>/dev/null || true
+            
+            info "Caddy configuration restored"
+        fi
     fi
+    
     cp -r "${backup_content_dir}/application/"* "${APP_DIR}"/ 2>/dev/null || true
     
     # Restore config and update with new values
