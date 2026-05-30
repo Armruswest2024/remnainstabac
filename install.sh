@@ -860,44 +860,51 @@ uninstall_panel() {
 
 # Show status
 show_status() {
-    echo -e "\n${CYAN}=== RemnaWave Status ===${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════${NC}"
+    echo -e "${CYAN}Статус RemnaWave Panel:${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════${NC}"
     
     # Service status
     if systemctl is-active --quiet remnawave; then
-        echo -e "${GREEN}● Service: Running${NC}"
+        echo -e "Сервис: ${GREEN}Запущен${NC}"
     else
-        echo -e "${RED}● Service: Stopped${NC}"
+        echo -e "Сервис: ${RED}Остановлен${NC}"
     fi
     
     # Database status
     if systemctl is-active --quiet postgresql; then
-        echo -e "${GREEN}● PostgreSQL: Running${NC}"
+        echo -e "PostgreSQL: ${GREEN}Запущен${NC}"
     else
-        echo -e "${RED}● PostgreSQL: Stopped${NC}"
+        echo -e "PostgreSQL: ${RED}Остановлен${NC}"
     fi
     
     # Web server status
     if [[ "$WEB_SERVER" == "nginx" ]]; then
         if systemctl is-active --quiet nginx; then
-            echo -e "${GREEN}● Nginx: Running${NC}"
+            echo -e "Nginx: ${GREEN}Запущен${NC}"
         else
-            echo -e "${RED}● Nginx: Stopped${NC}"
+            echo -e "Nginx: ${RED}Остановлен${NC}"
         fi
     else
         if systemctl is-active --quiet caddy; then
-            echo -e "${GREEN}● Caddy: Running${NC}"
+            echo -e "Caddy: ${GREEN}Запущен${NC}"
         else
-            echo -e "${RED}● Caddy: Stopped${NC}"
+            echo -e "Caddy: ${RED}Остановлен${NC}"
         fi
     fi
     
     # Disk usage
     local usage=$(du -sh /opt/remnawave 2>/dev/null | cut -f1)
-    echo -e "● Application size: ${usage:-N/A}"
+    echo -e "Размер приложения: ${usage:-Н/Д}"
     
     # Domain
-    echo -e "● Domain: ${DOMAIN:-Not configured}"
+    echo -e "Домен: ${DOMAIN:-не настроен}"
     
+    # Backups count
+    local backup_count=$(ls -1 "${BACKUP_DIR}"/remnawave_backup_*.tar.gz 2>/dev/null | wc -l)
+    echo -e "Бэкапы: $backup_count"
+    
+    echo -e "${CYAN}═══════════════════════════════════════${NC}"
     echo ""
 }
 
@@ -905,7 +912,7 @@ show_status() {
 show_menu() {
     clear
     echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║     RemnaWave Panel Installer v1.1     ║${NC}"
+    echo -e "${CYAN}║   RemnaWave Panel Installer v1.1       ║${NC}"
     echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
     echo ""
     
@@ -913,17 +920,17 @@ show_menu() {
         show_status
     fi
     
-    echo -e "${BLUE}Main Menu:${NC}"
-    echo "  1) Clean Installation"
-    echo "  2) Migrate Panel (from another server)"
-    echo "  3) Backup Panel"
-    echo "  4) Restore Panel from Backup"
-    echo "  5) Update Panel"
-    echo "  6) Uninstall Panel"
-    echo "  7) Show Status"
-    echo "  8) Exit"
+    echo -e "${BLUE}Главное меню:${NC}"
+    echo "  1) Чистая установка панели"
+    echo "  2) Миграция панели (с другого сервера)"
+    echo "  3) Создать бэкап панели"
+    echo "  4) Восстановить из бэкапа"
+    echo "  5) Обновить панель"
+    echo "  6) Удалить панель"
+    echo "  7) Показать статус"
+    echo "  8) Выход"
     echo ""
-    read -rp "Select option [1-8]: " choice
+    read -rp "Выберите опцию [1-8]: " choice
     
     case $choice in
         1)
@@ -936,35 +943,35 @@ show_menu() {
             ;;
         3)
             backup_panel
-            echo -e "\n${GREEN}Press Enter to continue...${NC}"
+            echo -e "\n${GREEN}Нажмите Enter для продолжения...${NC}"
             read
             show_menu
             ;;
         4)
-            echo "Available backups:"
-            ls -lh "${BACKUP_DIR}"/remnawave_backup_*.tar.gz 2>/dev/null || echo "No backups found"
+            echo "Доступные бэкапы:"
+            ls -lh "${BACKUP_DIR}"/remnawave_backup_*.tar.gz 2>/dev/null || echo "Бэкапы не найдены"
             echo ""
-            read -rp "Enter backup file path: " backup_file
+            read -rp "Введите путь к файлу бэкапа: " backup_file
             restore_panel "$backup_file"
-            echo -e "\n${GREEN}Press Enter to continue...${NC}"
+            echo -e "\n${GREEN}Нажмите Enter для продолжения...${NC}"
             read
             show_menu
             ;;
         5)
             update_panel
-            echo -e "\n${GREEN}Press Enter to continue...${NC}"
+            echo -e "\n${GREEN}Нажмите Enter для продолжения...${NC}"
             read
             show_menu
             ;;
         6)
             uninstall_panel
-            echo -e "\n${GREEN}Press Enter to continue...${NC}"
+            echo -e "\n${GREEN}Нажмите Enter для продолжения...${NC}"
             read
             show_menu
             ;;
         7)
             show_status
-            echo -e "${GREEN}Press Enter to continue...${NC}"
+            echo -e "${GREEN}Нажмите Enter для продолжения...${NC}"
             read
             show_menu
             ;;
@@ -1081,7 +1088,7 @@ run_installation() {
         error "Installation completed with errors. Check logs: ${LOG_FILE}"
     fi
     
-    echo -e "${GREEN}Press Enter to return to menu...${NC}"
+    echo -e "${GREEN}Нажмите Enter для возврата в меню...${NC}"
     read
     show_menu
 }
