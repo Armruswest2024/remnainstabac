@@ -293,9 +293,9 @@ server {
     ssl_session_timeout 1d;
     ssl_session_cache shared:MozSSL:10m;
     ssl_session_tickets    off;
-    ssl_certificate \"/etc/nginx/ssl/subdomain_fullchain.pem\";
-    ssl_certificate_key \"/etc/nginx/ssl/subdomain_privkey.key\";
-    ssl_trusted_certificate \"/etc/nginx/ssl/subdomain_fullchain.pem\";
+    ssl_certificate "/opt/remnawave/nginx/subdomain_fullchain.pem";
+    ssl_certificate_key "/opt/remnawave/nginx/subdomain_privkey.key";
+    ssl_trusted_certificate "/opt/remnawave/nginx/subdomain_fullchain.pem";
 
     ssl_stapling           on;
     ssl_stapling_verify    on;
@@ -373,9 +373,9 @@ server {
     ssl_session_timeout 1d;
     ssl_session_cache shared:MozSSL:10m;
     ssl_session_tickets    off;
-    ssl_certificate "/etc/nginx/ssl/fullchain.pem";
-    ssl_certificate_key "/etc/nginx/ssl/privkey.key";
-    ssl_trusted_certificate "/etc/nginx/ssl/fullchain.pem";
+    ssl_certificate "/opt/remnawave/nginx/fullchain.pem";
+    ssl_certificate_key "/opt/remnawave/nginx/privkey.key";
+    ssl_trusted_certificate "/opt/remnawave/nginx/fullchain.pem";
 
     ssl_stapling           on;
     ssl_stapling_verify    on;
@@ -424,13 +424,13 @@ EOF
 create_nginx_docker_compose() {
     local volumes="
             - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-            - ./fullchain.pem:/etc/nginx/ssl/fullchain.pem:ro
-            - ./privkey.key:/etc/nginx/ssl/privkey.key:ro"
+            - ./fullchain.pem:/opt/remnawave/nginx/fullchain.pem:ro
+            - ./privkey.key:/opt/remnawave/nginx/privkey.key:ro"
     
     if [[ -n "$SUB_DOMAIN" ]] && [[ -f /opt/remnawave/nginx/subdomain_fullchain.pem ]]; then
         volumes="$volumes
-            - ./subdomain_fullchain.pem:/etc/nginx/ssl/subdomain_fullchain.pem:ro
-            - ./subdomain_privkey.key:/etc/nginx/ssl/subdomain_privkey.key:ro"
+            - ./subdomain_fullchain.pem:/opt/remnawave/nginx/subdomain_fullchain.pem:ro
+            - ./subdomain_privkey.key:/opt/remnawave/nginx/subdomain_privkey.key:ro"
     fi
     
     cat > /opt/remnawave/nginx/docker-compose.yml << EOF
