@@ -17,7 +17,8 @@ NC='\033[0m' # No Color
 # Global variables
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="/var/log/remnawave_install.log"
-CONFIG_FILE="/etc/remnawave/config.env"
+APP_DIR="/opt/remnawave"
+CONFIG_FILE="${APP_DIR}/.env"
 BACKUP_DIR="/var/backups/remnawave"
 PG_VERSION=""
 DOMAIN=""
@@ -361,8 +362,9 @@ create_backup_script() {
 #!/bin/bash
 set -e
 
+APP_DIR="/opt/remnawave"
 BACKUP_DIR="/var/backups/remnawave"
-CONFIG_FILE="/etc/remnawave/config.env"
+CONFIG_FILE="${APP_DIR}/.env"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_NAME="remnawave_backup_${TIMESTAMP}"
 BACKUP_PATH="${BACKUP_DIR}/${BACKUP_NAME}"
@@ -382,8 +384,8 @@ PGPASSWORD="${DB_PASSWORD}" pg_dump -U remnawave -h localhost remnawave > "${BAC
 
 # Backup configuration
 echo "Backing up configuration..."
-cp -r /etc/remnawave "${BACKUP_PATH}/config" 2>/dev/null || true
-cp -r /opt/remnawave "${BACKUP_PATH}/application" 2>/dev/null || true
+cp "$CONFIG_FILE" "${BACKUP_PATH}/config.env" 2>/dev/null || true
+cp -r "${APP_DIR}" "${BACKUP_PATH}/application" 2>/dev/null || true
 
 # Create archive
 cd "$BACKUP_DIR"
@@ -457,8 +459,8 @@ backup_panel() {
     
     # Backup configuration
     info "Backing up configuration..."
-    cp -r /etc/remnawave "${backup_path}/config" 2>/dev/null || true
-    cp -r /opt/remnawave "${backup_path}/application" 2>/dev/null || true
+    cp "$CONFIG_FILE" "${backup_path}/config.env" 2>/dev/null || true
+    cp -r "${APP_DIR}" "${backup_path}/application" 2>/dev/null || true
     
     # Create archive
     tar -czf "${backup_path}.tar.gz" -C "$BACKUP_DIR" "$backup_name"
@@ -500,7 +502,7 @@ restore_panel() {
     fi
     
     # Load old config to get DB password if available
-    local old_config="${backup_content_dir}/config/config.env"
+    local old_config="${backup_content_dir}/config.env"
     local restore_db_password=""
     if [[ -f "$old_config" ]]; then
         source "$old_config" 2>/dev/null || true
@@ -532,28 +534,35 @@ restore_panel() {
     
     # Restore files
     info "Restoring application files..."
-    rm -rf /opt/remnawave/* 2>/dev/null || true
-    cp -r "${backup_content_dir}/application/"* /opt/remnawave/ 2>/dev/null || true
+    rm -rf "${APP_DIR:?}"/* 2>/dev/null || true
+    cp -r "${backup_content_dir}/application/"* "${APP_DIR}"/ 2>/dev/null || true
     
     # Restore config and update with new values
     info "Restoring configuration..."
-    rm -rf /etc/remnawave/* 2>/dev/null || true
-    mkdir -p /etc/remnawave
-    cp -r "${backup_content_dir}/config/"* /etc/remnawave/ 2>/dev/null || true
     
     # Update domain in config if different (for migration scenarios)
-    if [[ -n "$DOMAIN" ]] && [[ "$DOMAIN" != "$(grep '^DOMAIN=' /etc/remnawave/config.env 2>/dev/null | cut -d= -f2)" ]]; then
-        info "Updating domain configuration from $(grep '^DOMAIN=' /etc/remnawave/config.env 2>/dev/null | cut -d= -f2) to ${DOMAIN}..."
-        sed -i "s|^DOMAIN=.*|DOMAIN=${DOMAIN}|" /etc/remnawave/config.env
-        
-        # Update web server config for new domain
-        update_webserver_config
+    if [[ -n "$DOMAIN" ]] && [[ -f "${backup_content_dir}/config.env" ]]; then
+        local old_domain=$(grep '^DOMAIN=' "${backup_content_dir}/config.env" 2>/dev/null | cut -d= -f2)
+        if [[ "$DOMAIN" != "$old_domain" ]]; then
+            info "Updating domain configuration from ${old_domain} to ${DOMAIN}..."
+            sed -i "s|^DOMAIN=.*|DOMAIN=${DOMAIN}|" "${backup_content_dir}/config.env"
+            
+            # Copy updated config
+            cp "${backup_content_dir}/config.env" "$CONFIG_FILE"
+            
+            # Update web server config for new domain
+            update_webserver_config
+        else
+            cp "${backup_content_dir}/config.env" "$CONFIG_FILE"
+        fi
+    elif [[ -f "${backup_content_dir}/config.env" ]]; then
+        cp "${backup_content_dir}/config.env" "$CONFIG_FILE"
     fi
     
     # Update database password in config if it changed
     if [[ -n "$DB_PASSWORD" ]] && [[ "$DB_PASSWORD" != "$restore_db_password" ]]; then
         info "Updating database password in configuration..."
-        sed -i "s|DATABASE_URL=.*|DATABASE_URL=postgresql://remnawave:${DB_PASSWORD}@localhost:5432/remnawave|" /etc/remnawave/config.env
+        sed -i "s|DATABASE_URL=.*|DATABASE_URL=postgresql://remnawave:${DB_PASSWORD}@localhost:5432/remnawave|" "$CONFIG_FILE"
     fi
     
     # Cleanup
@@ -703,7 +712,7 @@ migrate_panel() {
             ssh -o StrictHostKeyChecking=no -p "$source_port" "${source_user}@${source_server}" \
                 "mkdir -p /tmp/remnawave_backup && \
                  sudo -u postgres pg_dump remnawave > /tmp/remnawave_backup/database.sql 2>/dev/null && \
-                 cp -r /etc/remnawave /tmp/remnawave_backup/config 2>/dev/null && \
+                 cp /opt/remnawave/.env /tmp/remnawave_backup/config.env 2>/dev/null && \
                  cp -r /opt/remnawave /tmp/remnawave_backup/application 2>/dev/null && \
                  cd /tmp && tar -czf remnawave_manual_backup.tar.gz remnawave_backup && \
                  rm -rf /tmp/remnawave_backup"
@@ -736,8 +745,8 @@ migrate_panel() {
     tar -xzf "$latest_backup" -C "$temp_extract"
     local backup_content_dir=$(find "$temp_extract" -maxdepth 1 -type d -name "*backup*" | head -1)
     
-    if [[ -f "${backup_content_dir}/config/config.env" ]]; then
-        source "${backup_content_dir}/config/config.env" 2>/dev/null || true
+    if [[ -f "${backup_content_dir}/config.env" ]]; then
+        source "${backup_content_dir}/config.env" 2>/dev/null || true
         WEB_SERVER="${WEB_SERVER:-nginx}"
         rm -rf "$temp_extract"
     else
@@ -788,8 +797,8 @@ update_panel() {
         rm -f /tmp/remnawave_update.tar.gz
         
         # Restore config if it was overwritten
-        if [[ -f /opt/remnawave.backup/config.env ]]; then
-            cp /opt/remnawave.backup/config.env /etc/remnawave/config.env 2>/dev/null || true
+        if [[ -f /opt/remnawave.backup/.env ]]; then
+            cp /opt/remnawave.backup/.env "${APP_DIR}/.env" 2>/dev/null || true
         fi
         
         # Cleanup backup
@@ -837,7 +846,7 @@ uninstall_panel() {
     rm -f /etc/systemd/system/remnawave.service
     
     # Remove application
-    rm -rf /opt/remnawave /etc/remnawave /var/log/remnawave
+    rm -rf "${APP_DIR}" /var/log/remnawave "$BACKUP_DIR"
     
     # Remove database (optional)
     read -rp "Remove PostgreSQL database? (yes/no): " remove_db
