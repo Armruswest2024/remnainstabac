@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # RemnaWave Panel Installation Script
-# Version: 1.1.0
+# Version: 2.0.0 (Docker Compose Edition)
+# Compatible with: https://github.com/CyberERROR/basecode
 # Author: RemnaWave Team
 
 set -e
@@ -11,7 +12,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-CYAN='\033[0;36m'
+CYAN='\033[0;6m'
 NC='\033[0m' # No Color
 
 # Global variables
@@ -19,19 +20,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="/var/log/remnawave_install.log"
 APP_DIR="/opt/remnawave"
 CONFIG_FILE="${APP_DIR}/.env"
-BACKUP_DIR="/opt/remnawave/backups"
-PG_VERSION=""
+BACKUP_DIR="${APP_DIR}/backups"
 DOMAIN=""
 SUB_DOMAIN=""
 EMAIL=""
 WEB_SERVER=""
 INSTALL_MODE=""
-DB_PASSWORD=""
 ADMIN_USERNAME=""
 ADMIN_PASSWORD=""
 JWT_SECRET=""
-APP_VERSION="latest"
-GITHUB_REPO="remnawave/remnawave"
+DB_PASSWORD=""
+REMAWAVE_VERSION="latest"
+GITHUB_BACKEND_REPO="CyberERROR/remnawave-backend"
 
 # Logging function
 log() {
@@ -63,16 +63,16 @@ check_requirements() {
         exit 1
     fi
     
-    # Check RAM (minimum 2GB)
+    # Check RAM (minimum 1GB for Docker)
     local ram=$(free -m | awk '/^Mem:/{print $2}')
-    if [[ $ram -lt 2048 ]]; then
-        warn "System has less than 2GB RAM. Installation may be unstable."
+    if [[ $ram -lt 1024 ]]; then
+        warn "System has less than 1GB RAM. Installation may be unstable."
     fi
     
-    # Check disk space (minimum 10GB)
+    # Check disk space (minimum 5GB)
     local disk=$(df -BG / | awk 'NR==2 {print $4}' | sed 's/G//')
-    if [[ $disk -lt 10 ]]; then
-        error "Insufficient disk space. Minimum 10GB required."
+    if [[ $disk -lt 5 ]]; then
+        error "Insufficient disk space. Minimum 5GB required."
         exit 1
     fi
     
@@ -89,6 +89,55 @@ check_requirements() {
 # Generate random string
 generate_secret() {
     openssl rand -base64 32 | tr -d '\n'
+}
+
+# Install Docker and Docker Compose
+install_docker() {
+    info "Installing Docker and Docker Compose..."
+    
+    # Check if Docker is already installed
+    if command -v docker &> /dev/null; then
+        info "Docker is already installed"
+        docker --version
+        return 0
+    fi
+    
+    # Install prerequisites
+    apt-get update -qq
+    apt-get install -y -qq \
+        curl wget git ca-certificates gnupg lsb-release \
+        > /dev/null 2>&1
+    
+    # Add Docker's official GPG key
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    
+    # Set up the repository
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
+      $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+      tee /etc/apt/sources.list.d/docker.list > /dev/null
+    
+    # Install Docker
+    apt-get update -qq
+    apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin > /dev/null 2>&1
+    
+    # Start and enable Docker
+    systemctl enable --now docker
+    
+    # Create docker group and add current user
+    groupadd -f docker
+    usermod -aG docker root
+    
+    info "Docker installed successfully"
+    docker --version
+}
+
+# Create Docker network
+create_docker_network() {
+    info "Creating Docker network..."
+    docker network create remnawave-network 2>/dev/null || info "Network already exists"
 }
 
 # Get user input with validation
