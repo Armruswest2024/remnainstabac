@@ -5,7 +5,7 @@
 # Compatible with: https://github.com/CyberERROR/basecode
 # Author: RemnaWave Team
 
-set -e
+set -euo pipefail
 
 # Colors for output
 RED='\033[0;31m'
@@ -32,6 +32,7 @@ JWT_SECRET=""
 DB_PASSWORD=""
 REMAWAVE_VERSION="latest"
 GITHUB_BACKEND_REPO="CyberERROR/remnawave-backend"
+GITHUB_REPO="${GITHUB_BACKEND_REPO}"
 
 # Logging function
 log() {
@@ -140,6 +141,38 @@ create_docker_network() {
     docker network create remnawave-network 2>/dev/null || info "Network already exists"
 }
 
+# Ensure Nginx Docker stack is available and running
+ensure_nginx_running() {
+    info "Ensuring Nginx Docker stack is running..."
+    install_docker
+    create_docker_network
+    mkdir -p /opt/remnawave/nginx
+    if [[ ! -f /opt/remnawave/nginx/nginx.conf ]]; then
+        create_nginx_config
+    fi
+    if [[ ! -f /opt/remnawave/nginx/docker-compose.yml ]]; then
+        create_nginx_docker_compose
+    fi
+    cd /opt/remnawave/nginx
+    if command -v docker &> /dev/null && docker compose version &> /dev/null; then
+        docker compose up -d
+    elif command -v docker-compose &> /dev/null; then
+        docker-compose up -d
+    else
+        error "Docker or docker-compose not found"
+        return 1
+    fi
+}
+
+install_caddy_service() {
+    info "Installing Caddy service..."
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
+    apt-get update -qq
+    apt-get install -y -qq caddy > /dev/null 2>&1
+    systemctl enable --now caddy
+}
+
 # Get user input with validation
 get_input() {
     local prompt="$1"
@@ -172,9 +205,9 @@ install_dependencies() {
     apt-get install -y -qq \
         curl wget git unzip zip tar \
         postgresql postgresql-contrib \
-        nginx certbot python3-certbot-nginx \
-        jq systemd supervisor \
-        ca-certificates gnupg lsb-release > /dev/null 2>&1
+        jq ca-certificates gnupg lsb-release \
+        openssl bash-completion \
+        > /dev/null 2>&1
     
     # Detect PostgreSQL version
     PG_VERSION=$(psql --version | grep -oP '\d+' | head -1)
@@ -263,7 +296,6 @@ setup_nginx_docker() {
     # Install acme.sh for SSL certificates
     info "Installing acme.sh for SSL certificates..."
     curl https://get.acme.sh | sh -s email="$EMAIL" > /dev/null 2>&1
-    source ~/.bashrc
     export PATH="$HOME/.acme.sh:$PATH"
     
     # Set default CA to Let's Encrypt
@@ -296,6 +328,7 @@ setup_nginx_docker() {
     
     # Create docker-compose.yml for Nginx
     create_nginx_docker_compose
+    create_docker_network
     
     # Start Nginx container
     cd /opt/remnawave/nginx
@@ -507,14 +540,9 @@ EOF
 # Setup Caddy
 setup_caddy() {
     info "Configuring Caddy..."
+    install_caddy_service
+    mkdir -p /opt/remnawave/caddy
     
-    # Install Caddy
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
-    apt-get update -qq
-    apt-get install -y -qq caddy > /dev/null 2>&1
-    
-    # Create Caddyfile
     cat > /etc/caddy/Caddyfile << EOF
 ${DOMAIN}, www.${DOMAIN} {
     reverse_proxy 127.0.0.1:3000
@@ -549,7 +577,7 @@ install_application() {
     
     # Download latest release from GitHub
     info "Downloading RemnaWave application..."
-    local download_url="https://github.com/${GITHUB_REPO}/releases/${APP_VERSION}/download/remnawave.tar.gz"
+    local download_url="https://github.com/${GITHUB_REPO}/releases/${REMAWAVE_VERSION}/download/remnawave.tar.gz"
     
     if curl -sfL "$download_url" -o /tmp/remnawave.tar.gz 2>/dev/null; then
         tar xzf /tmp/remnawave.tar.gz -C /opt/remnawave --strip-components=1
@@ -577,6 +605,7 @@ PLACEHOLDER
 NODE_ENV=production
 PORT=3000
 DATABASE_URL=postgresql://remnawave:${DB_PASSWORD}@localhost:5432/remnawave
+DB_PASSWORD=${DB_PASSWORD}
 JWT_SECRET=${JWT_SECRET}
 ADMIN_USERNAME=${ADMIN_USERNAME}
 ADMIN_PASSWORD=${ADMIN_PASSWORD}
@@ -623,7 +652,43 @@ PGPASSWORD="${DB_PASSWORD}" pg_dump -U remnawave -h localhost remnawave > "${BAC
 # Backup configuration
 echo "Резервное копирование конфигурации..."
 cp "$CONFIG_FILE" "${BACKUP_PATH}/config.env" 2>/dev/null || true
-cp -r "${APP_DIR}" "${BACKUP_PATH}/application" 2>/dev/null || true
+mkdir -p "${BACKUP_PATH}/application"
+cp -r "${APP_DIR}/bin" "${BACKUP_PATH}/application/bin" 2>/dev/null || true
+cp -r "${APP_DIR}/public" "${BACKUP_PATH}/application/public" 2>/dev/null || true
+cp -r "${APP_DIR}/scripts" "${BACKUP_PATH}/application/scripts" 2>/dev/null || true
+cp -r "${APP_DIR}/logs" "${BACKUP_PATH}/application/logs" 2>/dev/null || true
+cp -r "${APP_DIR}/data" "${BACKUP_PATH}/application/data" 2>/dev/null || true
+cp -r "${APP_DIR}/db" "${BACKUP_PATH}/application/db" 2>/dev/null || true
+cp "${APP_DIR}/docker-compose.yml" "${BACKUP_PATH}/application/docker-compose.yml" 2>/dev/null || true
+
+# Parse database password from config if not explicitly defined
+if [[ -z "${DB_PASSWORD:-}" && -n "${DATABASE_URL:-}" ]]; then
+    DB_PASSWORD=$(echo "$DATABASE_URL" | sed -n 's#.*://[^:]*:\([^@]*\)@.*#\1#p')
+fi
+
+# Backup Caddy config if present
+echo "Резервное копирование конфигурации Caddy..."
+if [[ -f "/etc/caddy/Caddyfile" ]]; then
+    mkdir -p "${BACKUP_PATH}/caddy"
+    cp "/etc/caddy/Caddyfile" "${BACKUP_PATH}/caddy/Caddyfile" 2>/dev/null || true
+fi
+if [[ -d "/var/lib/caddy" ]]; then
+    mkdir -p "${BACKUP_PATH}/caddy/data"
+    cp -r "/var/lib/caddy/"* "${BACKUP_PATH}/caddy/data/" 2>/dev/null || true
+fi
+
+# Save detected web server type
+current_web="$WEB_SERVER"
+if [[ -z "$current_web" ]]; then
+    if [[ -d "/opt/remnawave/nginx" ]]; then
+        current_web="nginx"
+    elif [[ -f "/etc/caddy/Caddyfile" ]]; then
+        current_web="caddy"
+    else
+        current_web="unknown"
+    fi
+fi
+echo "$current_web" > "${BACKUP_PATH}/web_server_type"
 
 # Create archive
 cd "$BACKUP_DIR"
@@ -716,6 +781,14 @@ backup_panel() {
     # Сохраняем тип веб-сервера в метаданных
     echo "$current_web" > "${backup_path}/web_server_type"
 
+    # Load DB password from config if available
+    if [[ -f "$CONFIG_FILE" ]]; then
+        source "$CONFIG_FILE" 2>/dev/null || true
+    fi
+    if [[ -z "${DB_PASSWORD:-}" && -n "${DATABASE_URL:-}" ]]; then
+        DB_PASSWORD=$(echo "$DATABASE_URL" | sed -n 's#.*://[^:]*:\([^@]*\)@.*#\1#p')
+    fi
+
     # Backup database
     info "Резервное копирование базы данных..."
     if PGPASSWORD="$DB_PASSWORD" pg_dump -U remnawave -h localhost remnawave > "${backup_path}/database.sql" 2>/dev/null; then
@@ -739,9 +812,16 @@ backup_panel() {
             cp -r /opt/remnawave/nginx "${backup_path}/nginx" 2>/dev/null || true
         fi
     elif [[ "$current_web" == "caddy" ]]; then
+        if [[ -f "/etc/caddy/Caddyfile" ]]; then
+            mkdir -p "${backup_path}/caddy"
+            cp /etc/caddy/Caddyfile "${backup_path}/caddy/Caddyfile" 2>/dev/null || true
+        fi
+        if [[ -d "/var/lib/caddy" ]]; then
+            mkdir -p "${backup_path}/caddy/data"
+            cp -r /var/lib/caddy/* "${backup_path}/caddy/data/" 2>/dev/null || true
+        fi
         if [[ -d "/opt/remnawave/caddy" ]]; then
-            info "Резервное копирование конфигурации и данных Caddy..."
-            cp -r /opt/remnawave/caddy "${backup_path}/caddy" 2>/dev/null || true
+            cp -r /opt/remnawave/caddy "${backup_path}/caddy/" 2>/dev/null || true
         fi
     else
         # Если неизвестно, копируем обе директории если они существуют
@@ -873,6 +953,13 @@ handle_webserver_conversion() {
         docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
         cd - > /dev/null
         
+        # Install and start Caddy with converted configuration
+        install_caddy_service
+        if [[ -f /opt/remnawave/caddy/Caddyfile ]]; then
+            cp /opt/remnawave/caddy/Caddyfile /etc/caddy/Caddyfile
+        fi
+        systemctl reload caddy 2>/dev/null || true
+        
         info "Nginx converted to Caddy successfully"
         
     elif [[ "$source_web_server" == "caddy" ]] && [[ "$target_web_server" == "nginx" ]]; then
@@ -886,6 +973,9 @@ handle_webserver_conversion() {
         
         # Stop caddy
         systemctl stop caddy 2>/dev/null || true
+        
+        # Start nginx stack
+        ensure_nginx_running
         
         info "Caddy converted to Nginx successfully"
     fi
@@ -905,6 +995,10 @@ restore_panel() {
     
     # Stop services first before any restoration
     systemctl stop remnawave 2>/dev/null || true
+    if [[ "$WEB_SERVER" == "nginx" ]]; then
+        install_docker
+        create_docker_network
+    fi
     
     # Extract backup
     local temp_dir=$(mktemp -d)
@@ -930,7 +1024,10 @@ restore_panel() {
         info "Веб-сервер в бэкапе (из метаданных): $source_web_server"
     elif [[ -f "$old_config" ]]; then
         source "$old_config" 2>/dev/null || true
-        restore_db_password="$DB_PASSWORD"
+        if [[ -z "${DB_PASSWORD:-}" && -n "${DATABASE_URL:-}" ]]; then
+            restore_db_password=$(echo "$DATABASE_URL" | sed -n 's#.*://[^:]*:\([^@]*\)@.*#\1#p')
+        fi
+        restore_db_password="${restore_db_password:-$DB_PASSWORD}"
         source_web_server="${WEB_SERVER:-nginx}"
         info "Веб-сервер в бэкапе (из конфига): $source_web_server"
     else
@@ -941,6 +1038,21 @@ restore_panel() {
             source_web_server="nginx"
         fi
         info "Веб-сервер в бэкапе (определен автоматически): $source_web_server"
+    fi
+
+    if [[ -z "$WEB_SERVER" ]]; then
+        echo -e "\n${BLUE}=== Выбор веб-сервера для восстановления ===${NC}"
+        echo "Обнаружен веб-сервер в бэкапе: $source_web_server"
+        echo "  1) Оставить веб-сервер из бэкапа ($source_web_server)"
+        echo "  2) Nginx"
+        echo "  3) Caddy"
+        read -rp "Выбор [1-3]: " restore_web_choice
+        case "$restore_web_choice" in
+            2) WEB_SERVER="nginx" ;; 
+            3) WEB_SERVER="caddy" ;; 
+            *) WEB_SERVER="$source_web_server" ;; 
+        esac
+        info "Целевой веб-сервер для восстановления: $WEB_SERVER"
     fi
     
     # If we couldn't get password from backup, use current or generate new
@@ -1028,9 +1140,17 @@ restore_panel() {
         elif [[ "$WEB_SERVER" == "caddy" ]] && [[ -d "${backup_content_dir}/caddy" ]]; then
             info "Restoring Caddy configuration..."
             mkdir -p /opt/remnawave/caddy
-            cp -r "${backup_content_dir}/caddy/"* /opt/remnawave/caddy/
+            cp -r "${backup_content_dir}/caddy/"* /opt/remnawave/caddy/ 2>/dev/null || true
+            if [[ -f "${backup_content_dir}/caddy/Caddyfile" ]]; then
+                mkdir -p /etc/caddy
+                cp "${backup_content_dir}/caddy/Caddyfile" /etc/caddy/Caddyfile 2>/dev/null || true
+            fi
+            if [[ -d "${backup_content_dir}/caddy/data" ]]; then
+                mkdir -p /var/lib/caddy
+                cp -r "${backup_content_dir}/caddy/data/"* /var/lib/caddy/ 2>/dev/null || true
+            fi
             
-            # Reload Caddy after config is restored
+            systemctl enable --now caddy 2>/dev/null || true
             systemctl reload caddy 2>/dev/null || true
             
             info "Caddy configuration restored"
@@ -1059,10 +1179,26 @@ restore_panel() {
         cp "${backup_content_dir}/config.env" "$CONFIG_FILE"
     fi
     
+    # Load restored config to ensure web server values are available
+    if [[ -f "$CONFIG_FILE" ]]; then
+        source "$CONFIG_FILE" 2>/dev/null || true
+    fi
+    
     # Update database password in config if it changed
     if [[ -n "$DB_PASSWORD" ]] && [[ "$DB_PASSWORD" != "$restore_db_password" ]]; then
         info "Updating database password in configuration..."
         sed -i "s|DATABASE_URL=.*|DATABASE_URL=postgresql://remnawave:${DB_PASSWORD}@localhost:5432/remnawave|" "$CONFIG_FILE"
+    fi
+    
+    # Ensure target web server is running after restore
+    if [[ "$WEB_SERVER" == "nginx" ]]; then
+        ensure_nginx_running
+    elif [[ "$WEB_SERVER" == "caddy" ]]; then
+        if ! command -v caddy &> /dev/null; then
+            install_caddy_service
+        fi
+        systemctl enable --now caddy 2>/dev/null || true
+        systemctl reload caddy 2>/dev/null || true
     fi
     
     # Cleanup temp directory
@@ -1101,7 +1237,6 @@ update_webserver_config() {
             # Install acme.sh if not present
             if [[ ! -f ~/.acme.sh/acme.sh ]]; then
                 curl https://get.acme.sh | sh -s email="$EMAIL" > /dev/null 2>&1
-                source ~/.bashrc
                 export PATH="$HOME/.acme.sh:$PATH"
             fi
             
@@ -1126,6 +1261,9 @@ update_webserver_config() {
         fi
         
     elif [[ "$WEB_SERVER" == "caddy" ]]; then
+        if ! command -v caddy &> /dev/null; then
+            install_caddy_service
+        fi
         # Update Caddyfile
         cat > /etc/caddy/Caddyfile << EOF
 ${DOMAIN}, www.${DOMAIN} {
@@ -1146,7 +1284,8 @@ ${DOMAIN}, www.${DOMAIN} {
 }
 EOF
         
-        systemctl reload caddy
+        systemctl enable --now caddy 2>/dev/null || true
+        systemctl reload caddy 2>/dev/null || true
         info "Caddy configuration updated (SSL will be auto-provisioned)"
     fi
 }
@@ -1163,12 +1302,24 @@ migrate_panel() {
     local source_user=$(get_input "SSH пользователь исходного сервера" "root")
     local source_port=$(get_input "SSH порт исходного сервера" "22" "^[0-9]+$")
     
-    # Get new domain if it will change
     if [[ "$domain_change" == "yes" ]]; then
         DOMAIN=$(get_input "Введите НОВЫЙ домен для этого сервера" "" "^[a-zA-Z0-9.-]+$")
         EMAIL=$(get_input "Введите email для SSL сертификатов" "" "^[^@]+@[^@]+\.[^@]+$")
     fi
     
+    echo -e "\nВыберите целевой веб-сервер на новом сервере:"
+    echo "  1) Оставить тот же веб-сервер, что и на исходном сервере"
+    echo "  2) Nginx"
+    echo "  3) Caddy"
+    read -rp "Выбор [1-3]: " target_web_choice
+    
+    local target_web_server=""
+    case "$target_web_choice" in
+        2) target_web_server="nginx" ;; 
+        3) target_web_server="caddy" ;; 
+        *) target_web_server="source" ;; 
+    esac
+
     # Create SSH key for migration if needed
     if [[ ! -f ~/.ssh/id_rsa ]]; then
         ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
@@ -1181,18 +1332,14 @@ migrate_panel() {
         return 1
     fi
     
-    # Copy backup from source or create one
     info "Copying backup from source server..."
     mkdir -p "$BACKUP_DIR"
     
-    # Try to copy existing backup first
     if ! scp -o StrictHostKeyChecking=no -P "$source_port" "${source_user}@${source_server}:/opt/remnawave/backups/remnawave_backup_*.tar.gz" "$BACKUP_DIR/" 2>/dev/null; then
         warn "No backup found on source server. Creating one now..."
         
-        # Run backup script on source server
         ssh -o StrictHostKeyChecking=no -p "$source_port" "${source_user}@${source_server}" \
             "/opt/remnawave/scripts/backup.sh" 2>/dev/null || {
-            # If backup script doesn't exist, try manual backup
             ssh -o StrictHostKeyChecking=no -p "$source_port" "${source_user}@${source_server}" \
                 "mkdir -p /tmp/remnawave_backup && \
                  sudo -u postgres pg_dump remnawave > /tmp/remnawave_backup/database.sql 2>/dev/null && \
@@ -1202,7 +1349,6 @@ migrate_panel() {
                  rm -rf /tmp/remnawave_backup"
         }
         
-        # Copy the created backup
         scp -o StrictHostKeyChecking=no -P "$source_port" "${source_user}@${source_server}:/opt/remnawave/backups/remnawave_backup_*.tar.gz" "$BACKUP_DIR/" 2>/dev/null || \
         scp -o StrictHostKeyChecking=no -P "$source_port" "${source_user}@${source_server}:/tmp/remnawave_manual_backup.tar.gz" "$BACKUP_DIR/" 2>/dev/null || {
             error "Failed to create or copy backup from source server"
@@ -1210,9 +1356,7 @@ migrate_panel() {
         }
     fi
     
-    # Get latest backup
     local latest_backup=$(ls -t "${BACKUP_DIR}"/remnawave_backup_*.tar.gz 2>/dev/null | head -1)
-    
     if [[ -z "$latest_backup" ]]; then
         latest_backup=$(ls -t "${BACKUP_DIR}"/remnawave_manual_backup.tar.gz 2>/dev/null | head -1)
     fi
@@ -1224,21 +1368,45 @@ migrate_panel() {
     
     info "Backup file: $latest_backup"
     
-    # Load old config to get web server type
     local temp_extract=$(mktemp -d)
     tar -xzf "$latest_backup" -C "$temp_extract"
     local backup_content_dir=$(find "$temp_extract" -maxdepth 1 -type d -name "*backup*" | head -1)
+    local source_web_server="nginx"
     
-    if [[ -f "${backup_content_dir}/config.env" ]]; then
+    if [[ -f "${backup_content_dir}/web_server_type" ]]; then
+        source_web_server=$(<"${backup_content_dir}/web_server_type")
+        info "Веб-сервер на исходном сервере (из метаданных): $source_web_server"
+    elif [[ -f "${backup_content_dir}/config.env" ]]; then
         source "${backup_content_dir}/config.env" 2>/dev/null || true
-        WEB_SERVER="${WEB_SERVER:-nginx}"
-        rm -rf "$temp_extract"
+        source_web_server="${WEB_SERVER:-nginx}"
+        info "Веб-сервер на исходном сервере (из конфига): $source_web_server"
     else
-        rm -rf "$temp_extract"
-        WEB_SERVER="nginx"
+        if [[ -d "${backup_content_dir}/caddy" ]]; then
+            source_web_server="caddy"
+        elif [[ -d "${backup_content_dir}/nginx" ]]; then
+            source_web_server="nginx"
+        fi
+        info "Веб-сервер на исходном сервере (автоопределение): $source_web_server"
+    fi
+    rm -rf "$temp_extract"
+    
+    if [[ "$target_web_server" == "source" ]]; then
+        WEB_SERVER="$source_web_server"
+    else
+        WEB_SERVER="$target_web_server"
     fi
     
-    # Restore backup (will handle domain update if needed)
+    if [[ "${source_web_server}" != "${WEB_SERVER}" ]]; then
+        info "Целевой веб-сервер: ${WEB_SERVER} (конвертация из ${source_web_server})"
+    else
+        info "Целевой веб-сервер: ${WEB_SERVER}"
+    fi
+    
+    if [[ "$WEB_SERVER" == "nginx" ]]; then
+        install_docker
+        create_docker_network
+    fi
+    
     restore_panel "$latest_backup"
     
     info "Миграция успешно завершена"
@@ -1405,7 +1573,7 @@ show_status() {
 show_menu() {
     clear
     echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║   RemnaWave Panel Installer v1.1       ║${NC}"
+    echo -e "${CYAN}║   RemnaWave Panel Installer v2.0.0       ║${NC}"
     echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
     echo ""
     
@@ -1558,6 +1726,8 @@ run_installation() {
     
     check_requirements
     install_dependencies
+    install_docker
+    create_docker_network
     
     if [[ "$INSTALL_MODE" == "clean" ]]; then
         setup_postgresql

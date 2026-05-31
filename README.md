@@ -13,8 +13,8 @@
 6. **Удаление** — полная деинсталляция панели
 
 ### Поддерживаемые веб-серверы:
-- **Nginx + Certbot** — классический вариант с Let's Encrypt SSL
-- **Caddy** — современный веб-сервер с автоматическим SSL
+- **Nginx в Docker Compose** — Nginx запускается в контейнере, SSL настраивается через acme.sh
+- **Caddy** — системный сервис с автоматическим SSL
 
 ## 🚀 Быстрый старт
 
@@ -41,8 +41,8 @@ sudo ./install.sh
 ### Требования к системе
 
 - **ОС**: Debian 10+/Ubuntu 20.04+
-- **RAM**: минимум 2GB (рекомендуется 4GB+)
-- **Диск**: минимум 10GB свободного места
+- **RAM**: минимум 1GB (рекомендуется 2GB+, для Docker 4GB+)
+- **Диск**: минимум 5GB свободного места (рекомендуется 10GB+)
 - **Права**: запуск от root (или через sudo)
 - **Порты**: 80 и 443 должны быть свободны
 
@@ -52,7 +52,7 @@ sudo ./install.sh
 
 ```
 ╔════════════════════════════════════════╗
-║   RemnaWave Panel Installer v1.1       ║
+║   RemnaWave Panel Installer v2.0.0       ║
 ╚════════════════════════════════════════╝
 
 Главное меню:
@@ -94,6 +94,7 @@ sudo ./install.sh
 - ✅ Перенос на новый сервер с тем же доменом
 - ✅ Перенос на новый сервер со сменой домена
 - ✅ Перенос только по IP (без домена)
+- ✅ Миграция между Nginx и Caddy в обе стороны
 
 **Что нужно указать:**
 1. IP адрес старого сервера
@@ -118,6 +119,7 @@ sudo ./install.sh
 - Конфигурационный файл (`.env` в `/opt/remnawave/`)
 - Файлы приложения (`/opt/remnawave/`)
 - SSL сертификаты и конфиг Nginx (если используется Nginx)
+- Caddyfile и данные Caddy (если используется Caddy)
 
 **Автоматические бэкапы:**
 - Скрипт настраивает cron job на ежедневный бэкап в 3:00
@@ -183,13 +185,15 @@ sudo ./install.sh
 
 ```
 /opt/remnawave/           # Приложение и конфигурация
-├── nginx/                # Nginx конфигурация и SSL сертификаты (если выбран Nginx)
+├── nginx/                # Nginx конфигурация и SSL сертификаты (если выбран Nginx в Docker)
 │   ├── nginx.conf        # Конфигурация Nginx
 │   ├── docker-compose.yml # Docker Compose файл для Nginx
 │   ├── fullchain.pem     # SSL сертификат для основного домена
 │   ├── privkey.key       # Приватный ключ для основного домена
 │   ├── subdomain_fullchain.pem  # SSL сертификат для поддомена подписки
 │   └── subdomain_privkey.key    # Приватный ключ для поддомена подписки
+├── caddy/                # Локальная Caddy конфигурация (если выбран Caddy)
+│   └── Caddyfile         # Caddy файл конфигурации
 ├── .env                  # Основной конфиг (DATABASE_URL, секреты, домен)
 ├── bin/                  # Исполняемые файлы
 │   └── remnawave         # Главный бинарник
@@ -203,6 +207,8 @@ sudo ./install.sh
 /var/log/
 ├── remnawave_install.log # Лог установки
 └── remnawave_backup.log  # Лог бэкапов
+
+Caddy data и SSL хранятся обычно в `/var/lib/caddy/`, а Nginx SSL хранится в `/opt/remnawave/nginx/`.
 ```
 
 ### Конфигурационный файл
@@ -316,8 +322,10 @@ dig panel.example.com
 # Проверить доступность порта 80
 curl -I http://panel.example.com
 
-# Получить сертификат вручную
-certbot certonly --webroot -w /var/www/certbot -d panel.example.com
+# Проверить сервис веб-сервера
+systemctl status caddy
+# или, если используется Docker Nginx
+sudo docker-compose -f /opt/remnawave/docker-compose.yml ps
 ```
 
 **3. Сервис не запускается**
