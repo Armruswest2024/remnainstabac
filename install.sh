@@ -1,8 +1,7 @@
 ﻿#!/bin/bash
 
 # RemnaWave Panel Installation Script
-# Version: 3.0.0 (Docker Compose Edition — basecode-compatible)
-# Compatible with: https://github.com/CyberERROR/basecode
+# Version: 3.0.0 (Docker Compose Edition)
 # Architecture: всё через Docker Compose (backend + postgres + nginx + subscription)
 
 set -euo pipefail
