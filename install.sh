@@ -616,13 +616,20 @@ backup_panel() {
 
     # 5. Бэкап базы данных
     info "Создаю дамп базы данных..."
-    local db_pass=$(grep "^POSTGRES_PASSWORD=" "$CONFIG_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"')
-    if [[ -n "$db_pass" ]]; then
-        docker exec remnawave-postgres pg_dump -U postgres remnawave > "${backup_path}/database.sql" 2>/dev/null && \
-            info "Дамп базы данных создан" || \
+    # Находим контейнер PostgreSQL через docker compose
+    local pg_container=""
+    cd "$APP_DIR"
+    pg_container=$(docker compose ps --format '{{.Name}}' 2>/dev/null | grep -i postgres | head -1)
+    
+    if [[ -n "$pg_container" ]]; then
+        docker exec "$pg_container" pg_dump -U postgres remnawave > "${backup_path}/database.sql" 2>/dev/null && \
+            info "Дамп базы данных создан ($pg_container)" || \
             warn "Не удалось создать дамп базы данных"
     else
-        warn "Не удалось получить пароль базы данных из .env"
+        warn "Контейнер PostgreSQL не найден. Пробую через docker compose exec..."
+        docker compose exec -T postgres pg_dump -U postgres remnawave > "${backup_path}/database.sql" 2>/dev/null && \
+            info "Дамп базы данных создан" || \
+            warn "Не удалось создать дамп базы данных"
     fi
 
     # 6. Метаданные
@@ -784,9 +791,10 @@ restore_panel() {
 
     # Ждём PostgreSQL
     info "Жду готовности PostgreSQL..."
+    local pg_container=$(docker compose ps --format '{{.Name}}' 2>/dev/null | grep -i postgres | head -1)
     local max_wait=30
     local waited=0
-    while ! docker exec remnawave-postgres pg_isready -q 2>/dev/null && [ $waited -lt $max_wait ]; do
+    while ! docker exec "$pg_container" pg_isready -q 2>/dev/null && [ $waited -lt $max_wait ]; do
         sleep 1
         ((waited++))
     done
@@ -795,10 +803,10 @@ restore_panel() {
     if [[ -f "${backup_dir}/database.sql" ]]; then
         info "Восстанавливаю базу данных..."
         # Удаляем старую БД и создаём заново
-        docker exec remnawave-postgres psql -U postgres -c "DROP DATABASE IF EXISTS remnawave;" 2>/dev/null || true
-        docker exec remnawave-postgres psql -U postgres -c "CREATE DATABASE remnawave OWNER postgres;" 2>/dev/null || true
+        docker exec "$pg_container" psql -U postgres -c "DROP DATABASE IF EXISTS remnawave;" 2>/dev/null || true
+        docker exec "$pg_container" psql -U postgres -c "CREATE DATABASE remnawave OWNER postgres;" 2>/dev/null || true
         # Импортируем дамп
-        cat "${backup_dir}/database.sql" | docker exec -i remnawave-postgres psql -U postgres -d remnawave 2>/dev/null && \
+        cat "${backup_dir}/database.sql" | docker exec -i "$pg_container" psql -U postgres -d remnawave 2>/dev/null && \
             info "База данных восстановлена" || \
             warn "Ошибка восстановления базы данных"
     else
