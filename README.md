@@ -59,6 +59,20 @@
 
 ## Установка
 
+### Одной командой (для ленивых)
+
+```bash
+bash <(wget -qO- https://raw.githubusercontent.com/Armruswest2024/remnainstabac/refs/heads/main/install.sh)
+```
+
+Или через curl:
+
+```bash
+curl -sL https://raw.githubusercontent.com/Armruswest2024/remnainstabac/refs/heads/main/install.sh | bash
+```
+
+### Пошагово
+
 ```bash
 # Скачать скрипт
 wget -O install.sh https://raw.githubusercontent.com/Armruswest2024/remnainstabac/refs/heads/main/install.sh
