@@ -614,7 +614,18 @@ backup_panel() {
         fi
     fi
 
-    # 5. Метаданные
+    # 5. Бэкап базы данных
+    info "Создаю дамп базы данных..."
+    local db_pass=$(grep "^POSTGRES_PASSWORD=" "$CONFIG_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"')
+    if [[ -n "$db_pass" ]]; then
+        docker exec remnawave-postgres pg_dump -U postgres remnawave > "${backup_path}/database.sql" 2>/dev/null && \
+            info "Дамп базы данных создан" || \
+            warn "Не удалось создать дамп базы данных"
+    else
+        warn "Не удалось получить пароль базы данных из .env"
+    fi
+
+    # 6. Метаданные
     echo "$web_server" > "${backup_path}/web_server_type"
     echo "$DOMAIN" > "${backup_path}/domain"
     echo "$SUB_DOMAIN" > "${backup_path}/sub_domain"
@@ -767,11 +778,35 @@ restore_panel() {
         fi
     fi
 
-    # Запускаем сервисы
-    info "Запускаю сервисы..."
-    docker network create remnawave-network 2>/dev/null || true
-
+    # Запускаем backend (для PostgreSQL)
+    info "Запускаю backend для восстановления БД..."
     cd "$APP_DIR" && docker compose up -d
+
+    # Ждём PostgreSQL
+    info "Жду готовности PostgreSQL..."
+    local max_wait=30
+    local waited=0
+    while ! docker exec remnawave-postgres pg_isready -q 2>/dev/null && [ $waited -lt $max_wait ]; do
+        sleep 1
+        ((waited++))
+    done
+
+    # Восстанавливаем базу данных
+    if [[ -f "${backup_dir}/database.sql" ]]; then
+        info "Восстанавливаю базу данных..."
+        # Удаляем старую БД и создаём заново
+        docker exec remnawave-postgres psql -U postgres -c "DROP DATABASE IF EXISTS remnawave;" 2>/dev/null || true
+        docker exec remnawave-postgres psql -U postgres -c "CREATE DATABASE remnawave OWNER postgres;" 2>/dev/null || true
+        # Импортируем дамп
+        cat "${backup_dir}/database.sql" | docker exec -i remnawave-postgres psql -U postgres -d remnawave 2>/dev/null && \
+            info "База данных восстановлена" || \
+            warn "Ошибка восстановления базы данных"
+    else
+        warn "Дамп базы данных не найден в бэкапе"
+    fi
+
+    # Запускаем остальные сервисы
+    info "Запускаю сервисы..."
     cd "$SUB_DIR" && docker compose up -d
 
     if [[ "$target_web_server" == "nginx" ]]; then
