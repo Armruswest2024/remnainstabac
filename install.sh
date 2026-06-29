@@ -547,6 +547,8 @@ full_install() {
     install_ssl
     start_services
     link_subscription
+    setup_backup_cron
+    health_check
 
     echo -e "\n${GREEN}${BOLD}════════════════════════════════════════${NC}"
     echo -e "${GREEN}${BOLD}   Установка завершена! ✓${NC}"
@@ -557,12 +559,129 @@ full_install() {
     echo -e "Конфигурация:  ${CONFIG_FILE}"
     echo -e "Логи:          ${LOG_FILE}"
     echo -e "Бэкапы:        ${BACKUP_DIR}/"
+    echo -e "Автобэкап:     ежедневно в 03:00"
     echo ""
     echo -e "Полезные команды:"
     echo "  cd /opt/remnawave && docker compose ps"
     echo "  docker logs remnawave"
     echo "  docker logs remnawave-subscription-page"
     echo ""
+}
+
+# ===================== CRON ДЛЯ БЭКАПОВ =====================
+setup_backup_cron() {
+    info "Настраиваю автоматические бэкапы..."
+    
+    # Создаём скрипт бэкапа для cron
+    cat > /opt/remnawave/scripts/backup.sh << 'BACKUP_SCRIPT'
+#!/bin/bash
+# Автоматический бэкап RemnaWave (вызывается cron)
+cd /opt/remnawave
+BACKUP_DIR="/opt/remnawave/backups"
+mkdir -p "$BACKUP_DIR"
+
+BACKUP_NAME="remnawave_backup_$(date +%Y%m%d_%H%M%S)"
+BACKUP_PATH="${BACKUP_DIR}/${BACKUP_NAME}"
+mkdir -p "$BACKUP_PATH"
+
+# Конфиги
+cp .env "${BACKUP_PATH}/.env" 2>/dev/null || true
+cp docker-compose.yml "${BACKUP_PATH}/docker-compose.yml" 2>/dev/null || true
+
+# Subscription
+mkdir -p "${BACKUP_PATH}/subscription"
+cp subscription/.env "${BACKUP_PATH}/subscription/.env" 2>/dev/null || true
+cp subscription/docker-compose.yml "${BACKUP_PATH}/subscription/docker-compose.yml" 2>/dev/null || true
+
+# Nginx
+if [[ -d nginx ]]; then
+    mkdir -p "${BACKUP_PATH}/nginx"
+    cp -r nginx/* "${BACKUP_PATH}/nginx/" 2>/dev/null || true
+fi
+
+# Caddy
+if [[ -f /etc/caddy/Caddyfile ]]; then
+    mkdir -p "${BACKUP_PATH}/caddy"
+    cp /etc/caddy/Caddyfile "${BACKUP_PATH}/caddy/Caddyfile" 2>/dev/null || true
+fi
+
+# База данных
+pg_container=$(docker compose ps --format '{{.Name}}' 2>/dev/null | grep -i postgres | head -1)
+if [[ -n "$pg_container" ]]; then
+    docker exec "$pg_container" pg_dump -U postgres remnawave > "${BACKUP_PATH}/database.sql" 2>/dev/null || true
+fi
+
+# Метаданные
+echo "$WEB_SERVER" > "${BACKUP_PATH}/web_server_type" 2>/dev/null || echo "nginx" > "${BACKUP_PATH}/web_server_type"
+grep "^FRONT_END_DOMAIN=" .env 2>/dev/null | cut -d= -f2 > "${BACKUP_PATH}/domain"
+grep "^SUB_PUBLIC_DOMAIN=" .env 2>/dev/null | cut -d= -f2 > "${BACKUP_PATH}/sub_domain"
+
+# Архив
+cd "$BACKUP_DIR"
+tar -czf "${BACKUP_NAME}.tar.gz" "$BACKUP_NAME"
+rm -rf "$BACKUP_NAME"
+
+# Очистка старых (оставляем 7)
+ls -t "${BACKUP_DIR}"/remnawave_backup_*.tar.gz 2>/dev/null | tail -n +8 | xargs -r rm 2>/dev/null
+
+echo "$(date '+%Y-%m-%d %H:%M:%S') Бэкап создан: ${BACKUP_DIR}/${BACKUP_NAME}.tar.gz" >> /var/log/remnawave_backup.log
+BACKUP_SCRIPT
+    
+    chmod +x /opt/remnawave/scripts/backup.sh
+    
+    # Устанавливаем cron (ежедневно в 03:00)
+    if ! crontab -l 2>/dev/null | grep -q "remnawave.*backup"; then
+        (crontab -l 2>/dev/null; echo "0 3 * * * /opt/remnawave/scripts/backup.sh >> /var/log/remnawave_backup.log 2>&1") | crontab -
+        info "Автобэкап настроен: ежедневно в 03:00"
+    else
+        info "Автобэкап уже настроен"
+    fi
+}
+
+# ===================== HEALTH CHECK =====================
+health_check() {
+    info "Проверяю здоровье сервисов..."
+    sleep 5
+    
+    local all_ok=true
+    
+    # Backend
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "remnawave$"; then
+        info "Backend: работает"
+    else
+        error "Backend: не запущен"
+        all_ok=false
+    fi
+    
+    # Subscription
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "remnawave-subscription"; then
+        info "Subscription: работает"
+    else
+        error "Subscription: не запущен"
+        all_ok=false
+    fi
+    
+    # Nginx/Caddy
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "remnawave-nginx"; then
+        info "Nginx: работает"
+    elif systemctl is-active --quiet caddy 2>/dev/null; then
+        info "Caddy: работает"
+    else
+        error "Веб-сервер: не запущен"
+        all_ok=false
+    fi
+    
+    # PostgreSQL
+    local pg_container=$(docker compose ps --format '{{.Name}}' 2>/dev/null | grep -i postgres | head -1)
+    if [[ -n "$pg_container" ]] && docker exec "$pg_container" pg_isready -q 2>/dev/null; then
+        info "PostgreSQL: работает"
+    else
+        warn "PostgreSQL: не удалось проверить"
+    fi
+    
+    if [[ "$all_ok" == "false" ]]; then
+        warn "Некоторые сервисы не запущены. Проверьте логи: docker logs <container_name>"
+    fi
 }
 
 # ===================== БЭКАП =====================
@@ -626,10 +745,7 @@ backup_panel() {
             info "Дамп базы данных создан ($pg_container)" || \
             warn "Не удалось создать дамп базы данных"
     else
-        warn "Контейнер PostgreSQL не найден. Пробую через docker compose exec..."
-        docker compose exec -T postgres pg_dump -U postgres remnawave > "${backup_path}/database.sql" 2>/dev/null && \
-            info "Дамп базы данных создан" || \
-            warn "Не удалось создать дамп базы данных"
+        warn "Контейнер PostgreSQL не найден. Пропускаю дамп БД"
     fi
 
     # 6. Метаданные
@@ -785,6 +901,9 @@ restore_panel() {
         fi
     fi
 
+    # Создаём Docker сеть если не существует
+    docker network create remnawave-network 2>/dev/null || true
+
     # Запускаем backend (для PostgreSQL)
     info "Запускаю backend для восстановления БД..."
     cd "$APP_DIR" && docker compose up -d
@@ -792,25 +911,28 @@ restore_panel() {
     # Ждём PostgreSQL
     info "Жду готовности PostgreSQL..."
     local pg_container=$(docker compose ps --format '{{.Name}}' 2>/dev/null | grep -i postgres | head -1)
-    local max_wait=30
-    local waited=0
-    while ! docker exec "$pg_container" pg_isready -q 2>/dev/null && [ $waited -lt $max_wait ]; do
-        sleep 1
-        ((waited++))
-    done
-
-    # Восстанавливаем базу данных
-    if [[ -f "${backup_dir}/database.sql" ]]; then
-        info "Восстанавливаю базу данных..."
-        # Удаляем старую БД и создаём заново
-        docker exec "$pg_container" psql -U postgres -c "DROP DATABASE IF EXISTS remnawave;" 2>/dev/null || true
-        docker exec "$pg_container" psql -U postgres -c "CREATE DATABASE remnawave OWNER postgres;" 2>/dev/null || true
-        # Импортируем дамп
-        cat "${backup_dir}/database.sql" | docker exec -i "$pg_container" psql -U postgres -d remnawave 2>/dev/null && \
-            info "База данных восстановлена" || \
-            warn "Ошибка восстановления базы данных"
+    
+    if [[ -z "$pg_container" ]]; then
+        warn "Контейнер PostgreSQL не найден, пропускаю восстановление БД"
     else
-        warn "Дамп базы данных не найден в бэкапе"
+        local max_wait=30
+        local waited=0
+        while ! docker exec "$pg_container" pg_isready -q 2>/dev/null && [ $waited -lt $max_wait ]; do
+            sleep 1
+            ((waited++))
+        done
+
+        # Восстанавливаем базу данных
+        if [[ -f "${backup_dir}/database.sql" ]]; then
+            info "Восстанавливаю базу данных..."
+            docker exec "$pg_container" psql -U postgres -c "DROP DATABASE IF EXISTS remnawave;" 2>/dev/null || true
+            docker exec "$pg_container" psql -U postgres -c "CREATE DATABASE remnawave OWNER postgres;" 2>/dev/null || true
+            cat "${backup_dir}/database.sql" | docker exec -i "$pg_container" psql -U postgres -d remnawave 2>/dev/null && \
+                info "База данных восстановлена" || \
+                warn "Ошибка восстановления базы данных"
+        else
+            warn "Дамп базы данных не найден в бэкапе"
+        fi
     fi
 
     # Запускаем остальные сервисы
@@ -824,6 +946,14 @@ restore_panel() {
     fi
 
     rm -rf "$temp_dir"
+
+    # Если сменили домен — перелинковываем подписку
+    if [[ -n "$new_domain" ]]; then
+        info "Перелинковываю подписку с новым доменом..."
+        link_subscription
+    fi
+
+    health_check
 
     echo -e "\n${GREEN}Восстановление завершено!${NC}"
     [[ -n "$new_domain" ]] && echo -e "Новый домен: ${CYAN}https://${new_domain}${NC}"
@@ -971,6 +1101,11 @@ update_panel() {
     cd "$APP_DIR" && docker compose up -d
     cd "$SUB_DIR" && docker compose up -d
 
+    # Очищаем старые образы
+    info "Очищаю старые Docker образы..."
+    docker image prune -f 2>/dev/null || true
+
+    health_check
     info "Обновление завершено"
 }
 
