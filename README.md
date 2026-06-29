@@ -3,7 +3,6 @@
 Скрипт автоматической установки, бэкапа, восстановления и миграции панели RemnaWave для Debian/Ubuntu серверов.
 
 **Версия:** 3.0.0 (Docker Compose Edition)
-**Совместимость:** [CyberERROR/basecode](https://github.com/CyberERROR/basecode)
 
 ## Возможности
 
