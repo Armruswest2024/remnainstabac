@@ -1,7 +1,7 @@
 ﻿#!/bin/bash
 
 # RemnaWave Panel Installation Script
-# Version: 3.0.0 (Docker Compose Edition)
+# Version: 3.1.0 (Docker Compose Edition)
 # Architecture: всё через Docker Compose (backend + postgres + nginx + subscription)
 
 set -euo pipefail
@@ -231,7 +231,7 @@ install_backend() {
 
     DB_PASSWORD=$(generate_password)
     sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$DB_PASSWORD/" .env
-    sed -i "s|^\(DATABASE_URL=\"postgresql://postgres:\)[^\@]*\(@.*\)|\1$DB_PASSWORD\2|" .env
+    sed -i "s|^\(DATABASE_URL=\"postgresql://postgres:\).*\(@.*\)|\1$DB_PASSWORD\2|" .env
 
     sed -i "s|^FRONT_END_DOMAIN=.*|FRONT_END_DOMAIN=$DOMAIN|" .env
     sed -i "s|^SUB_PUBLIC_DOMAIN=.*|SUB_PUBLIC_DOMAIN=$SUB_DOMAIN|" .env
@@ -612,7 +612,10 @@ if [[ -n "$pg_container" ]]; then
 fi
 
 # Метаданные
-echo "$WEB_SERVER" > "${BACKUP_PATH}/web_server_type" 2>/dev/null || echo "nginx" > "${BACKUP_PATH}/web_server_type"
+web_server_type="nginx"
+[[ -d "$NGINX_DIR" ]] && [[ -f "$NGINX_DIR/docker-compose.yml" ]] && web_server_type="nginx"
+[[ -f "/etc/caddy/Caddyfile" ]] && web_server_type="caddy"
+echo "$web_server_type" > "${BACKUP_PATH}/web_server_type" 2>/dev/null || echo "nginx" > "${BACKUP_PATH}/web_server_type"
 grep "^FRONT_END_DOMAIN=" .env 2>/dev/null | cut -d= -f2 > "${BACKUP_PATH}/domain"
 grep "^SUB_PUBLIC_DOMAIN=" .env 2>/dev/null | cut -d= -f2 > "${BACKUP_PATH}/sub_domain"
 
@@ -1032,7 +1035,7 @@ migrate_panel() {
              cp docker-compose.yml /tmp/\$BACKUP_NAME/ && \
              cp -r nginx /tmp/\$BACKUP_NAME/nginx 2>/dev/null || true && \
              cp -r subscription /tmp/\$BACKUP_NAME/subscription 2>/dev/null || true && \
-             cp -r /etc/caddy/Caddyfile /tmp/\$BACKUP_NAME/caddy/Caddyfile 2>/dev/null || true && \
+             mkdir -p /tmp/\$BACKUP_NAME/caddy && \
              cp /etc/caddy/Caddyfile /tmp/\$BACKUP_NAME/caddy/Caddyfile 2>/dev/null || true && \
              echo nginx > /tmp/\$BACKUP_NAME/web_server_type && \
              tar -czf /tmp/remnawave_migration.tar.gz -C /tmp \$BACKUP_NAME && \
@@ -1190,7 +1193,7 @@ show_menu() {
     echo " |  _ <  __/ | | | | | | | | (_| |\ V  V / (_| |\ V /  __/"
     echo " |_| \_\___|_| |_| |_|_| |_|\__,_| \_/\_/ \__,_| \_/ \___|"
     echo ""
-    echo -e "      ${YELLOW}v3.0.0 — Docker Compose Edition${NC}"
+    echo -e "      ${YELLOW}v3.1.0 — Docker Compose Edition${NC}"
     echo -e "${BLUE}======================================================${NC}\n"
 
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -1278,7 +1281,7 @@ main() {
     mkdir -p "$(dirname "$LOG_FILE")"
     > "$LOG_FILE"
 
-    info "RemnaWave Installation Script v3.0.0"
+    info "RemnaWave Installation Script v3.1.0"
     info "Логи: ${LOG_FILE}"
 
     show_menu
