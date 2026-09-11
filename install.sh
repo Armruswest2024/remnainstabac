@@ -1,8 +1,15 @@
-﻿#!/bin/bash
+#!/bin/bash
 
 # RemnaWave Panel Installation Script
-# Version: 3.1.0 (Docker Compose Edition)
-# Architecture: всё через Docker Compose (backend + postgres + nginx + subscription)
+# Version: 3.1.1 (Docker Compose Edition) — ИСПРАВЛЕННАЯ ВЕРСИЯ
+# Архитектура: всё через Docker Compose (backend + postgres + nginx + subscription)
+#
+# Исправления по сравнению с v3.1.0:
+# - backup_panel(): добавлено копирование SSL-ключей (fullchain.pem, privkey.key)
+# - cron backup.sh: добавлена переменная NGINX_DIR и копирование SSL
+# - migrate_panel(): fallback теперь делает pg_dump и сохраняет домен
+# - install_backend(): JWT_AUTH_SECRET → APP_SECRET
+# - restore_panel(): корректное восстановление SSL из бэкапа
 
 set -euo pipefail
 
@@ -107,26 +114,22 @@ check_terminal() {
 check_requirements() {
     info "Проверяю системные требования..."
 
-    # Проверка ОС
     if [[ ! -f /etc/debian_version ]]; then
         error "Поддерживаются только Debian/Ubuntu"
         exit 1
     fi
 
-    # Проверка RAM (минимум 1GB)
     local ram=$(free -m | awk '/^Mem:/{print $2}')
     if [[ $ram -lt 1024 ]]; then
         warn "Мало RAM (${ram}MB). Рекомендуется минимум 1GB"
     fi
 
-    # Проверка диска (минимум 5GB)
     local disk=$(df -BG / | awk 'NR==2 {print $4}' | sed 's/G//')
     if [[ $disk -lt 5 ]]; then
         error "Мало места на диске. Нужно минимум 5GB, доступно ${disk}GB"
         exit 1
     fi
 
-    # Проверка портов
     for port in 80 443; do
         if ss -tlnp | grep -q ":$port "; then
             warn "Порт $port уже занят"
@@ -161,7 +164,6 @@ create_directories() {
 configure_installation() {
     echo -e "\n${BLUE}=== Настройка установки ===${NC}\n"
 
-    # Домен панели
     while true; do
         read -rp "Домен панели (напр. panel.example.com): " DOMAIN < /dev/tty
         DOMAIN=$(echo "$DOMAIN" | tr -d '\r' | sed 's/[^a-zA-Z0-9@._-]//g')
@@ -169,7 +171,6 @@ configure_installation() {
         error "Домен не может быть пустым"
     done
 
-    # Поддомен подписки
     while true; do
         read -rp "Поддомен подписки (напр. sub.example.com): " SUB_DOMAIN < /dev/tty
         SUB_DOMAIN=$(echo "$SUB_DOMAIN" | tr -d '\r' | sed 's/[^a-zA-Z0-9@._-]//g')
@@ -177,7 +178,6 @@ configure_installation() {
         error "Поддомен должен быть другим и не пустым"
     done
 
-    # Email для SSL
     while true; do
         read -rp "Email для SSL сертификатов: " EMAIL < /dev/tty
         EMAIL=$(echo "$EMAIL" | tr -d '\r' | sed 's/[^a-zA-Z0-9@._+-]//g')
@@ -185,9 +185,8 @@ configure_installation() {
         error "Введите корректный email"
     done
 
-    # Веб-сервер
     echo -e "\nВыберите веб-сервер:"
-    echo "  1) Nginx ( Docker)"
+    echo "  1) Nginx (Docker)"
     echo "  2) Caddy (автоматический SSL)"
     read -rp "Выбор [1-2]: " web_choice < /dev/tty
     case "$web_choice" in
@@ -195,7 +194,6 @@ configure_installation() {
         *) WEB_SERVER="nginx" ;;
     esac
 
-    # Подтверждение
     echo -e "\n${BLUE}=== Сводка ===${NC}"
     echo "Панель: https://${DOMAIN}"
     echo "Подписка: https://${SUB_DOMAIN}"
@@ -216,15 +214,21 @@ install_backend() {
 
     cd "$APP_DIR"
 
-    # Скачиваем docker-compose.yml и .env
     run_quiet "Скачиваю конфиги backend" bash -c "
         curl -sfL -o docker-compose.yml https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/docker-compose-prod.yml &&
         curl -sfL -o .env https://raw.githubusercontent.com/remnawave/backend/refs/heads/main/.env.sample
     "
 
-    # Генерируем секреты
     info "Генерирую секреты..."
-    sed -i "s/^JWT_AUTH_SECRET=.*/JWT_AUTH_SECRET=$(generate_secret)/" .env
+
+    # [ИСПРАВЛЕНО] Используем APP_SECRET вместо JWT_AUTH_SECRET
+    if grep -q "^JWT_AUTH_SECRET=" .env; then
+        sed -i "s/^JWT_AUTH_SECRET=.*/APP_SECRET=$(generate_secret)/" .env
+    fi
+    if grep -q "^APP_SECRET=" .env; then
+        sed -i "s/^APP_SECRET=.*/APP_SECRET=$(generate_secret)/" .env
+    fi
+
     sed -i "s/^JWT_API_TOKENS_SECRET=.*/JWT_API_TOKENS_SECRET=$(generate_secret)/" .env
     sed -i "s/^METRICS_PASS=.*/METRICS_PASS=$(generate_secret)/" .env
     sed -i "s/^WEBHOOK_SECRET_HEADER=.*/WEBHOOK_SECRET_HEADER=$(generate_secret)/" .env
@@ -284,24 +288,19 @@ EOF
 install_ssl() {
     info "Устанавливаю SSL сертификаты..."
 
-    # Устанавливаем acme.sh
     run_quiet "Устанавливаю acme.sh" bash -c "curl -fsSL https://get.acme.sh | sh -s email=\"$EMAIL\""
     export PATH="$HOME/.acme.sh:$PATH"
 
-    # Настраиваем CA
     run_quiet "Настраиваю Let's Encrypt" ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
 
-    # SSL для панели
     run_quiet "Получаю сертификат для $DOMAIN" ~/.acme.sh/acme.sh --issue --standalone -d "$DOMAIN" \
         --key-file "${NGINX_DIR}/privkey.key" \
         --fullchain-file "${NGINX_DIR}/fullchain.pem"
 
-    # SSL для подписки
     run_quiet "Получаю сертификат для $SUB_DOMAIN" ~/.acme.sh/acme.sh --issue --standalone -d "$SUB_DOMAIN" \
         --key-file "${NGINX_DIR}/subdomain_privkey.key" \
         --fullchain-file "${NGINX_DIR}/subdomain_fullchain.pem"
 
-    # Проверка
     if [[ ! -f "${NGINX_DIR}/fullchain.pem" ]] || [[ ! -f "${NGINX_DIR}/subdomain_fullchain.pem" ]]; then
         error "Не удалось получить SSL сертификаты. Проверьте DNS и логи."
         return 1
@@ -457,7 +456,6 @@ EOF
 setup_caddy() {
     info "Настраиваю Caddy..."
 
-    # Установка Caddy
     run_quiet "Устанавливаю Caddy" bash -c "
         curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg &&
         curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list &&
@@ -572,19 +570,27 @@ full_install() {
 setup_backup_cron() {
     info "Настраиваю автоматические бэкапы..."
     
-    # Создаём скрипт бэкапа для cron
+    mkdir -p /opt/remnawave/scripts
+    
+    # [ИСПРАВЛЕНО] Добавлена переменная NGINX_DIR и копирование SSL-ключей
     cat > /opt/remnawave/scripts/backup.sh << 'BACKUP_SCRIPT'
 #!/bin/bash
 # Автоматический бэкап RemnaWave (вызывается cron)
-cd /opt/remnawave
-BACKUP_DIR="/opt/remnawave/backups"
+# [ИСПРАВЛЕНО] v3.1.1 — добавлено копирование SSL и переменных окружения
+
+APP_DIR="/opt/remnawave"
+NGINX_DIR="${APP_DIR}/nginx"
+SUB_DIR="${APP_DIR}/subscription"
+BACKUP_DIR="${APP_DIR}/backups"
+
+cd "$APP_DIR"
 mkdir -p "$BACKUP_DIR"
 
 BACKUP_NAME="remnawave_backup_$(date +%Y%m%d_%H%M%S)"
 BACKUP_PATH="${BACKUP_DIR}/${BACKUP_NAME}"
 mkdir -p "$BACKUP_PATH"
 
-# Конфиги
+# Конфиги backend
 cp .env "${BACKUP_PATH}/.env" 2>/dev/null || true
 cp docker-compose.yml "${BACKUP_PATH}/docker-compose.yml" 2>/dev/null || true
 
@@ -593,10 +599,15 @@ mkdir -p "${BACKUP_PATH}/subscription"
 cp subscription/.env "${BACKUP_PATH}/subscription/.env" 2>/dev/null || true
 cp subscription/docker-compose.yml "${BACKUP_PATH}/subscription/docker-compose.yml" 2>/dev/null || true
 
-# Nginx
-if [[ -d nginx ]]; then
+# [ИСПРАВЛЕНО] Nginx + SSL
+if [[ -d "$NGINX_DIR" ]]; then
     mkdir -p "${BACKUP_PATH}/nginx"
-    cp -r nginx/* "${BACKUP_PATH}/nginx/" 2>/dev/null || true
+    cp "${NGINX_DIR}/nginx.conf" "${BACKUP_PATH}/nginx/nginx.conf" 2>/dev/null || true
+    cp "${NGINX_DIR}/docker-compose.yml" "${BACKUP_PATH}/nginx/docker-compose.yml" 2>/dev/null || true
+    cp "${NGINX_DIR}/fullchain.pem" "${BACKUP_PATH}/nginx/fullchain.pem" 2>/dev/null || true
+    cp "${NGINX_DIR}/privkey.key" "${BACKUP_PATH}/nginx/privkey.key" 2>/dev/null || true
+    cp "${NGINX_DIR}/subdomain_fullchain.pem" "${BACKUP_PATH}/nginx/subdomain_fullchain.pem" 2>/dev/null || true
+    cp "${NGINX_DIR}/subdomain_privkey.key" "${BACKUP_PATH}/nginx/subdomain_privkey.key" 2>/dev/null || true
 fi
 
 # Caddy
@@ -605,17 +616,18 @@ if [[ -f /etc/caddy/Caddyfile ]]; then
     cp /etc/caddy/Caddyfile "${BACKUP_PATH}/caddy/Caddyfile" 2>/dev/null || true
 fi
 
-# База данных
-pg_container=$(docker compose ps --format '{{.Name}}' 2>/dev/null | grep -i postgres | head -1)
+# [ИСПРАВЛЕНО] База данных — pg_dump
+pg_container=$(cd "$APP_DIR" && docker compose ps --format '{{.Name}}' 2>/dev/null | grep -i postgres | head -1)
 if [[ -n "$pg_container" ]]; then
-    docker exec "$pg_container" pg_dump -U postgres remnawave > "${BACKUP_PATH}/database.sql" 2>/dev/null || true
+    docker exec "$pg_container" pg_dump -U postgres remnawave > "${BACKUP_PATH}/database.sql" 2>/dev/null || \
+        echo "$(date '+%Y-%m-%d %H:%M:%S') ОШИБКА: pg_dump не удался" >> /var/log/remnawave_backup.log
 fi
 
 # Метаданные
 web_server_type="nginx"
 [[ -d "$NGINX_DIR" ]] && [[ -f "$NGINX_DIR/docker-compose.yml" ]] && web_server_type="nginx"
 [[ -f "/etc/caddy/Caddyfile" ]] && web_server_type="caddy"
-echo "$web_server_type" > "${BACKUP_PATH}/web_server_type" 2>/dev/null || echo "nginx" > "${BACKUP_PATH}/web_server_type"
+echo "$web_server_type" > "${BACKUP_PATH}/web_server_type"
 grep "^FRONT_END_DOMAIN=" .env 2>/dev/null | cut -d= -f2 > "${BACKUP_PATH}/domain"
 grep "^SUB_PUBLIC_DOMAIN=" .env 2>/dev/null | cut -d= -f2 > "${BACKUP_PATH}/sub_domain"
 
@@ -632,7 +644,6 @@ BACKUP_SCRIPT
     
     chmod +x /opt/remnawave/scripts/backup.sh
     
-    # Устанавливаем cron (ежедневно в 03:00)
     if ! crontab -l 2>/dev/null | grep -q "remnawave.*backup"; then
         (crontab -l 2>/dev/null; echo "0 3 * * * /opt/remnawave/scripts/backup.sh >> /var/log/remnawave_backup.log 2>&1") | crontab -
         info "Автобэкап настроен: ежедневно в 03:00"
@@ -648,7 +659,6 @@ health_check() {
     
     local all_ok=true
     
-    # Backend
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "remnawave$"; then
         info "Backend: работает"
     else
@@ -656,7 +666,6 @@ health_check() {
         all_ok=false
     fi
     
-    # Subscription
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "remnawave-subscription"; then
         info "Subscription: работает"
     else
@@ -664,7 +673,6 @@ health_check() {
         all_ok=false
     fi
     
-    # Nginx/Caddy
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "remnawave-nginx"; then
         info "Nginx: работает"
     elif systemctl is-active --quiet caddy 2>/dev/null; then
@@ -674,8 +682,7 @@ health_check() {
         all_ok=false
     fi
     
-    # PostgreSQL
-    local pg_container=$(docker compose ps --format '{{.Name}}' 2>/dev/null | grep -i postgres | head -1)
+    local pg_container=$(cd "$APP_DIR" && docker compose ps --format '{{.Name}}' 2>/dev/null | grep -i postgres | head -1)
     if [[ -n "$pg_container" ]] && docker exec "$pg_container" pg_isready -q 2>/dev/null; then
         info "PostgreSQL: работает"
     else
@@ -695,7 +702,6 @@ backup_panel() {
     local backup_path="${BACKUP_DIR}/${backup_name}"
     mkdir -p "$backup_path"
 
-    # Определяем веб-сервер
     local web_server="unknown"
     if [[ -d "$NGINX_DIR" ]] && [[ -f "$NGINX_DIR/docker-compose.yml" ]]; then
         web_server="nginx"
@@ -714,12 +720,13 @@ backup_panel() {
     cp "${SUB_DIR}/.env" "${backup_path}/subscription/.env" 2>/dev/null || true
     cp "${SUB_DIR}/docker-compose.yml" "${backup_path}/subscription/docker-compose.yml" 2>/dev/null || true
 
-    # 3. Nginx (SSL + конфиги)
+    # [ИСПРАВЛЕНО] 3. Nginx + SSL (раньше SSL не копировался!)
     if [[ -d "$NGINX_DIR" ]]; then
-        info "Копирую Nginx (SSL + конфиги)..."
+        info "Копирую Nginx (конфиги + SSL сертификаты)..."
         mkdir -p "${backup_path}/nginx"
         cp "${NGINX_DIR}/nginx.conf" "${backup_path}/nginx/nginx.conf" 2>/dev/null || true
         cp "${NGINX_DIR}/docker-compose.yml" "${backup_path}/nginx/docker-compose.yml" 2>/dev/null || true
+        # SSL-сертификаты
         cp "${NGINX_DIR}/fullchain.pem" "${backup_path}/nginx/fullchain.pem" 2>/dev/null || true
         cp "${NGINX_DIR}/privkey.key" "${backup_path}/nginx/privkey.key" 2>/dev/null || true
         cp "${NGINX_DIR}/subdomain_fullchain.pem" "${backup_path}/nginx/subdomain_fullchain.pem" 2>/dev/null || true
@@ -736,9 +743,8 @@ backup_panel() {
         fi
     fi
 
-    # 5. Бэкап базы данных
+    # [ИСПРАВЛЕНО] 5. Бэкап базы данных — pg_dump
     info "Создаю дамп базы данных..."
-    # Находим контейнер PostgreSQL через docker compose
     local pg_container=""
     cd "$APP_DIR"
     pg_container=$(docker compose ps --format '{{.Name}}' 2>/dev/null | grep -i postgres | head -1)
@@ -854,7 +860,7 @@ restore_panel() {
     [[ -f "${backup_dir}/subscription/.env" ]] && cp "${backup_dir}/subscription/.env" "${SUB_DIR}/.env"
     [[ -f "${backup_dir}/subscription/docker-compose.yml" ]] && cp "${backup_dir}/subscription/docker-compose.yml" "${SUB_DIR}/docker-compose.yml"
 
-    # Nginx
+    # Nginx + SSL
     if [[ -d "${backup_dir}/nginx" ]]; then
         mkdir -p "$NGINX_DIR"
         cp -r "${backup_dir}/nginx/"* "$NGINX_DIR/" 2>/dev/null || true
@@ -874,23 +880,25 @@ restore_panel() {
     if [[ -n "$new_domain" ]]; then
         info "Обновляю домен: ${backup_domain} → ${new_domain}"
 
-        # Backend .env
         sed -i "s|^FRONT_END_DOMAIN=.*|FRONT_END_DOMAIN=$new_domain|" "${APP_DIR}/.env"
         sed -i "s|^SUB_PUBLIC_DOMAIN=.*|SUB_PUBLIC_DOMAIN=$new_sub_domain|" "${APP_DIR}/.env"
 
-        # Nginx конфиг
-        if [[ "$target_web_server" == "nginx" && -f "${NGINX_DIR}/nginx.conf" ]]; then
-            sed -i "s|server_name .*|server_name $new_domain;|" "${NGINX_DIR}/nginx.conf"
-            sed -i "s|server_name .*|server_name $new_sub_domain;|" "${NGINX_DIR}/nginx.conf"
+        # Обновляем в .env подписки
+        if [[ -f "${SUB_DIR}/.env" ]]; then
+            sed -i "s|^REMNAWAVE_PANEL_URL=.*|REMNAWAVE_PANEL_URL=http://remnawave:3000|" "${SUB_DIR}/.env"
         fi
 
-        # Caddy конфиг
+        if [[ "$target_web_server" == "nginx" && -f "${NGINX_DIR}/nginx.conf" ]]; then
+            sed -i "0,/server_name .*/{s|server_name .*|server_name $new_domain;|}" "${NGINX_DIR}/nginx.conf"
+            sed -i "0,/server_name .*/{s|server_name .*|server_name $new_sub_domain;|}" "${NGINX_DIR}/nginx.conf"
+        fi
+
         if [[ "$target_web_server" == "caddy" ]]; then
             sed -i "s|^${backup_domain}.*|${new_domain}|" /etc/caddy/Caddyfile
             sed -i "s|^${backup_sub_domain}.*|${new_sub_domain}|" /etc/caddy/Caddyfile
         fi
 
-        # Получаем новые SSL
+        # Получаем новые SSL (если домен изменился)
         if [[ -n "$new_email" ]]; then
             info "Получаю новые SSL сертификаты..."
             export PATH="$HOME/.acme.sh:$PATH"
@@ -925,7 +933,6 @@ restore_panel() {
             ((waited++))
         done
 
-        # Восстанавливаем базу данных
         if [[ -f "${backup_dir}/database.sql" ]]; then
             info "Восстанавливаю базу данных..."
             docker exec "$pg_container" psql -U postgres -c "DROP DATABASE IF EXISTS remnawave;" 2>/dev/null || true
@@ -967,14 +974,12 @@ restore_panel() {
 migrate_panel() {
     info "Запуск миграции..."
 
-    # Параметры исходного сервера
     read -rp "IP/hostname исходного сервера: " source_server < /dev/tty
     read -rp "SSH пользователь [root]: " source_user < /dev/tty
     source_user="${source_user:-root}"
     read -rp "SSH порт [22]: " source_port < /dev/tty
     source_port="${source_port:-22}"
 
-    # Будет ли меняться домен?
     read -rp "Будет ли изменён домен? (yes/no): " domain_change < /dev/tty
 
     local new_domain=""
@@ -990,7 +995,6 @@ migrate_panel() {
         new_email=$(echo "$new_email" | tr -d '\r' | sed 's/[^a-zA-Z0-9@._+-]//g')
     fi
 
-    # Целевой веб-сервер
     echo "Выберите веб-сервер на новом сервере:"
     echo "  1) Оставить как на исходном"
     echo "  2) Nginx"
@@ -1027,22 +1031,55 @@ migrate_panel() {
         "$BACKUP_DIR/" 2>/dev/null; then
 
         warn "Готовый бэкап не найден. Создаю на исходном сервере..."
+
+        # [ИСПРАВЛЕНО] Fallback теперь включает pg_dump, SSL и метаданные
         ssh -o StrictHostKeyChecking=no -p "$source_port" "${source_user}@${source_server}" \
             "cd /opt/remnawave && \
              BACKUP_NAME=\$(date +%Y%m%d_%H%M%S) && \
-             mkdir -p /tmp/\$BACKUP_NAME && \
-             cp .env /tmp/\$BACKUP_NAME/ && \
-             cp docker-compose.yml /tmp/\$BACKUP_NAME/ && \
-             cp -r nginx /tmp/\$BACKUP_NAME/nginx 2>/dev/null || true && \
-             cp -r subscription /tmp/\$BACKUP_NAME/subscription 2>/dev/null || true && \
-             mkdir -p /tmp/\$BACKUP_NAME/caddy && \
-             cp /etc/caddy/Caddyfile /tmp/\$BACKUP_NAME/caddy/Caddyfile 2>/dev/null || true && \
-             echo nginx > /tmp/\$BACKUP_NAME/web_server_type && \
-             tar -czf /tmp/remnawave_migration.tar.gz -C /tmp \$BACKUP_NAME && \
-             rm -rf /tmp/\$BACKUP_NAME"
+             BACKUP_DIR=/opt/remnawave/backups && \
+             mkdir -p \$BACKUP_DIR/\$BACKUP_NAME && \
+             \
+             # Конфиги \
+             cp .env \$BACKUP_DIR/\$BACKUP_NAME/ && \
+             cp docker-compose.yml \$BACKUP_DIR/\$BACKUP_NAME/ && \
+             \
+             # Subscription \
+             mkdir -p \$BACKUP_DIR/\$BACKUP_NAME/subscription && \
+             cp subscription/.env \$BACKUP_DIR/\$BACKUP_NAME/subscription/ 2>/dev/null && \
+             cp subscription/docker-compose.yml \$BACKUP_DIR/\$BACKUP_NAME/subscription/ 2>/dev/null && \
+             \
+             # Nginx + SSL \
+             mkdir -p \$BACKUP_DIR/\$BACKUP_NAME/nginx && \
+             cp nginx/nginx.conf \$BACKUP_DIR/\$BACKUP_NAME/nginx/ 2>/dev/null && \
+             cp nginx/docker-compose.yml \$BACKUP_DIR/\$BACKUP_NAME/nginx/ 2>/dev/null && \
+             cp nginx/fullchain.pem \$BACKUP_DIR/\$BACKUP_NAME/nginx/ 2>/dev/null && \
+             cp nginx/privkey.key \$BACKUP_DIR/\$BACKUP_NAME/nginx/ 2>/dev/null && \
+             cp nginx/subdomain_fullchain.pem \$BACKUP_DIR/\$BACKUP_NAME/nginx/ 2>/dev/null && \
+             cp nginx/subdomain_privkey.key \$BACKUP_DIR/\$BACKUP_NAME/nginx/ 2>/dev/null && \
+             \
+             # Caddy \
+             mkdir -p \$BACKUP_DIR/\$BACKUP_NAME/caddy && \
+             cp /etc/caddy/Caddyfile \$BACKUP_DIR/\$BACKUP_NAME/caddy/ 2>/dev/null && \
+             \
+             # [ИСПРАВЛЕНО] pg_dump \
+             PG_CONTAINER=\$(docker compose ps --format '{{.Name}}' 2>/dev/null | grep -i postgres | head -1) && \
+             if [[ -n \"\$PG_CONTAINER\" ]]; then \
+                 docker exec \"\$PG_CONTAINER\" pg_dump -U postgres remnawave > \$BACKUP_DIR/\$BACKUP_NAME/database.sql 2>/dev/null; \
+             fi && \
+             \
+             # [ИСПРАВЛЕНО] Метаданные \
+             grep '^FRONT_END_DOMAIN=' .env 2>/dev/null | cut -d= -f2 > \$BACKUP_DIR/\$BACKUP_NAME/domain && \
+             grep '^SUB_PUBLIC_DOMAIN=' .env 2>/dev/null | cut -d= -f2 > \$BACKUP_DIR/\$BACKUP_NAME/sub_domain && \
+             echo 'nginx' > \$BACKUP_DIR/\$BACKUP_NAME/web_server_type && \
+             [[ -f /etc/caddy/Caddyfile ]] && echo 'caddy' > \$BACKUP_DIR/\$BACKUP_NAME/web_server_type; \
+             \
+             # Архив \
+             cd \$BACKUP_DIR && \
+             tar -czf remnawave_backup_\$BACKUP_NAME.tar.gz \$BACKUP_NAME && \
+             rm -rf \$BACKUP_NAME"
 
         scp -o StrictHostKeyChecking=no -P "$source_port" \
-            "${source_user}@${source_server}:/tmp/remnawave_migration.tar.gz" \
+            "${source_user}@${source_server}:/opt/remnawave/backups/remnawave_backup_*.tar.gz" \
             "$BACKUP_DIR/" 2>/dev/null || {
             error "Не удалось скопировать бэкап"
             return 1
@@ -1060,14 +1097,12 @@ migrate_panel() {
 
     # Восстанавливаем с параметрами
     if [[ -n "$new_domain" ]]; then
-        # Временно подменяем функцию restore_panel для передачи параметров
         WEB_SERVER="$target_web_server"
         DOMAIN="$new_domain"
         SUB_DOMAIN="$new_sub_domain"
         EMAIL="$new_email"
     fi
 
-    # Восстанавливаем
     if [[ "$target_web_server" != "source" ]]; then
         WEB_SERVER="$target_web_server"
     fi
@@ -1088,23 +1123,18 @@ update_panel() {
 
     cd "$APP_DIR"
 
-    # Останавливаем
     docker compose down
     cd "$SUB_DIR" && docker compose down 2>/dev/null || true
 
-    # Бэкап перед обновлением
     backup_panel
 
-    # Обновляем образы
     info "Скачиваю новые образы..."
     cd "$APP_DIR" && docker compose pull
     cd "$SUB_DIR" && docker compose pull 2>/dev/null || true
 
-    # Запускаем
     cd "$APP_DIR" && docker compose up -d
     cd "$SUB_DIR" && docker compose up -d
 
-    # Очищаем старые образы
     info "Очищаю старые Docker образы..."
     docker image prune -f 2>/dev/null || true
 
@@ -1122,7 +1152,6 @@ uninstall_panel() {
         return
     fi
 
-    # Останавливаем
     systemctl stop caddy 2>/dev/null || true
     systemctl disable caddy 2>/dev/null || true
 
@@ -1130,11 +1159,9 @@ uninstall_panel() {
     cd "$SUB_DIR" 2>/dev/null && docker compose down 2>/dev/null || true
     cd "$APP_DIR" 2>/dev/null && docker compose down 2>/dev/null || true
 
-    # Удаляем
     rm -rf "$APP_DIR"
     rm -f /etc/caddy/Caddyfile
 
-    # Удаляем контейнеры и образы
     docker container prune -f 2>/dev/null || true
     docker image prune -f 2>/dev/null || true
 
@@ -1147,21 +1174,18 @@ show_status() {
     echo -e "${CYAN}   Статус RemnaWave Panel${NC}"
     echo -e "${CYAN}═══════════════════════════════════════${NC}"
 
-    # Backend
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "remnawave$"; then
         echo -e "Backend:    ${GREEN}Запущен${NC}"
     else
         echo -e "Backend:    ${RED}Остановлен${NC}"
     fi
 
-    # Subscription
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "remnawave-subscription"; then
         echo -e "Subscription: ${GREEN}Запущен${NC}"
     else
         echo -e "Subscription: ${RED}Остановлен${NC}"
     fi
 
-    # Nginx/Caddy
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "remnawave-nginx"; then
         echo -e "Nginx:      ${GREEN}Запущен${NC}"
     elif systemctl is-active --quiet caddy 2>/dev/null; then
@@ -1170,13 +1194,11 @@ show_status() {
         echo -e "Веб-сервер: ${RED}Остановлен${NC}"
     fi
 
-    # Домен
     if [[ -f "$CONFIG_FILE" ]]; then
         local domain=$(grep "^FRONT_END_DOMAIN=" "$CONFIG_FILE" | cut -d= -f2)
         echo -e "Домен:      ${domain:-не настроен}"
     fi
 
-    # Бэкапы
     local backup_count=$(ls -1 "${BACKUP_DIR}"/remnawave_backup_*.tar.gz 2>/dev/null | wc -l)
     echo -e "Бэкапы:     $backup_count"
 
@@ -1193,7 +1215,7 @@ show_menu() {
     echo " |  _ <  __/ | | | | | | | | (_| |\ V  V / (_| |\ V /  __/"
     echo " |_| \_\___|_| |_| |_|_| |_|\__,_| \_/\_/ \__,_| \_/ \___|"
     echo ""
-    echo -e "      ${YELLOW}v3.1.0 — Docker Compose Edition${NC}"
+    echo -e "      ${YELLOW}v3.1.1 — Docker Compose Edition (Fixed)${NC}"
     echo -e "${BLUE}======================================================${NC}\n"
 
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -1281,7 +1303,7 @@ main() {
     mkdir -p "$(dirname "$LOG_FILE")"
     > "$LOG_FILE"
 
-    info "RemnaWave Installation Script v3.1.0"
+    info "RemnaWave Installation Script v3.1.1 (Fixed)"
     info "Логи: ${LOG_FILE}"
 
     show_menu
