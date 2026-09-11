@@ -2,7 +2,7 @@
 
 Скрипт автоматической установки, бэкапа, восстановления и миграции панели RemnaWave для Debian/Ubuntu серверов.
 
-**Версия:** 3.1.0 (Docker Compose Edition)
+**Версия:** 3.1.1 (Docker Compose Edition)
 
 ## Возможности
 
@@ -14,16 +14,18 @@
 - Выбор веб-сервера: **Nginx** (Docker) или **Caddy** (автоматический SSL)
 - Автоматические бэкапы по cron (ежедневно в 03:00)
 - Health check после установки/обновления
+- Поддержка APP_SECRET (Remnawave >= v2.8.1)
 
 ### Бэкап
 Автоматическое создание резервной копии **всех** данных:
-- `.env` — пароли, JWT-секреты, URL базы данных
+- `.env` — пароли, APP_SECRET, JWT_API_TOKENS_SECRET, URL базы данных
 - `docker-compose.yml` — конфигурация backend
-- SSL-сертификаты (fullchain.pem, privkey.key)
+- SSL-сертификаты (fullchain.pem, privkey.key) для панели и подписки
 - Конфигурация Nginx (nginx.conf)
 - Subscription page (API-токен, docker-compose.yml)
 - Конфигурация Caddy (если используется)
-- **Dump PostgreSQL** (база данных)
+- **Dump PostgreSQL** (database.sql)
+- Метаданные: домен, поддомен, тип веб-сервера
 - Автобэкап по cron (ежедневно в 03:00, хранит 7 последних копий)
 
 ### Восстановление
@@ -37,6 +39,7 @@
 ### Миграция
 Перенос панели с одного сервера на другой через SSH:
 - Копирование бэкапа по SSH
+- Fallback: автоматическое создание полного бэкапа (SSL + pg_dump + метаданные)
 - Восстановление на новом сервере
 - Опциональная смена домена
 - Опциональная смена веб-сервера (Nginx ↔ Caddy)
@@ -88,7 +91,7 @@ sudo ./install.sh
 
 ```
 ╔════════════════════════════════════════╗
-║   RemnaWave Panel Installer v3.0.0    ║
+║   RemnaWave Panel Installer v3.1.1    ║
 ╚════════════════════════════════════════╝
 
 Главное меню:
@@ -107,7 +110,7 @@ sudo ./install.sh
 ```
 /opt/remnawave/
 ├── docker-compose.yml      # Backend (RemnaWave + PostgreSQL)
-├── .env                    # Конфигурация (пароли, JWT, DB_URL)
+├── .env                    # Конфигурация (пароли, APP_SECRET, DB_URL)
 ├── nginx/
 │   ├── docker-compose.yml  # Nginx контейнер
 │   ├── nginx.conf          # Конфигурация Nginx
@@ -128,6 +131,7 @@ sudo ./install.sh
 remnawave_backup_20260629_120000.tar.gz
 ├── .env                    # Все пароли и секреты
 ├── docker-compose.yml      # Backend конфиг
+├── database.sql            # Dump PostgreSQL
 ├── nginx/
 │   ├── nginx.conf
 │   ├── docker-compose.yml
@@ -140,22 +144,22 @@ remnawave_backup_20260629_120000.tar.gz
 │   └── docker-compose.yml
 ├── caddy/                  # Если Caddy
 │   └── Caddyfile
-├── web_server_type         # Метаданные
-├── domain
-└── sub_domain
+├── web_server_type         # Метаданные: nginx/caddy
+├── domain                  # Домен панели
+└── sub_domain              # Поддомен подписки
 ```
 
 ## Миграция
 
 ### Сценарий 1: Тот же домен
-1. Запустите скрипт на новом сервере
+1. Запустите скрипт на **новом** сервере
 2. Выберите "Миграция"
 3. Укажите IP старого сервера
 4. Выберите "Не менять домен"
 5. Скрипт скопирует бэкап и восстановит всё
 
 ### Сценарий 2: Новый домен
-1. Запустите скрипт на новом сервере
+1. Запустите скрипт на **новом** сервере
 2. Выберите "Миграция"
 3. Укажите IP старого сервера
 4. Выберите "Изменить домен"
@@ -235,6 +239,11 @@ docker logs remnawave-nginx
 # Перезапустите
 cd /opt/remnawave && docker compose restart
 ```
+
+### Бэкап не содержит SSL-сертификаты
+Если бэкап был создан старой версией скрипта (до v3.1.1), SSL-ключи могут отсутствовать. В этом случае:
+- Проверьте наличие файлов `fullchain.pem` и `privkey.key` в архиве
+- Если отсутствуют — получите новые сертификаты после восстановления: `~/.acme.sh/acme.sh --renew -d ваш-домен`
 
 ## Лицензия
 
