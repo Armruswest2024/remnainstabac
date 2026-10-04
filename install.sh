@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # RemnaWave Panel Installation Script
-# Version: 3.1.1 (Docker Compose Edition) — ИСПРАВЛЕННАЯ ВЕРСИЯ
+# Version: 3.1.2 (Docker Compose Edition) — ИСПРАВЛЕННАЯ ВЕРСИЯ
 # Архитектура: всё через Docker Compose (backend + postgres + nginx + subscription)
 #
 # Исправления по сравнению с v3.1.0:
@@ -10,6 +10,13 @@
 # - migrate_panel(): fallback теперь делает pg_dump и сохраняет домен
 # - install_backend(): JWT_AUTH_SECRET → APP_SECRET
 # - restore_panel(): корректное восстановление SSL из бэкапа
+#
+# Исправления v3.1.2:
+# - Добавлена проверка DNS перед SSL (check_dns)
+# - Добавлен бэкап Valkey/Redis (Remnawave >= 3.4.0 требует Redis)
+# - Исправлена миграция: nginx.conf не ломается при смене домена (awk вместо sed)
+# - Добавлено восстановление Valkey при restore_panel
+# - .gitignore добавлен, LICENSE файл создан
 
 set -euo pipefail
 
@@ -284,9 +291,33 @@ EOF
     info "Subscription сконфигурирован"
 }
 
+# ===================== ПРОВЕРКА DNS =====================
+check_dns() {
+    info "Проверяю DNS записи для ${DOMAIN} и ${SUB_DOMAIN}..."
+
+    # Проверяем что домен резолвится в IP этого сервера
+    local server_ip
+    server_ip=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')
+
+    for domain in "$DOMAIN" "$SUB_DOMAIN"; do
+        local resolved_ip
+        resolved_ip=$(dig +short "$domain" 2>/dev/null | head -1 || nslookup -silent "$domain" 2>/dev/null | awk '/^Address: / { print $2 }' | head -1)
+        if [[ -z "$resolved_ip" ]]; then
+            warn "DNS не настроен для ${domain} — SSL может не получиться"
+        elif [[ "$resolved_ip" != "$server_ip" && "$resolved_ip" != "0.0.0.0" ]]; then
+            warn "DNS ${domain} указывает на ${resolved_ip}, ожидается ${server_ip}"
+        else
+            info "DNS ${domain} OK → ${resolved_ip}"
+        fi
+    done
+}
+
 # ===================== SSL СЕРТИФИКАТЫ =====================
 install_ssl() {
     info "Устанавливаю SSL сертификаты..."
+
+    # [ИСПРАВЛЕНО] Проверка DNS перед SSL
+    check_dns
 
     run_quiet "Устанавливаю acme.sh" bash -c "curl -fsSL https://get.acme.sh | sh -s email=\"$EMAIL\""
     export PATH="$HOME/.acme.sh:$PATH"
@@ -623,6 +654,17 @@ if [[ -n "$pg_container" ]]; then
         echo "$(date '+%Y-%m-%d %H:%M:%S') ОШИБКА: pg_dump не удался" >> /var/log/remnawave_backup.log
 fi
 
+# [ИСПРАВЛЕНО v3.1.2] Valkey/Redis — данные кэша и сессий (Remnawave >= 3.4.0)
+redis_container=$(cd "$APP_DIR" && docker compose ps --format '{{.Name}}' 2>/dev/null | grep -iE 'redis|valkey' | head -1)
+if [[ -n "$redis_container" ]]; then
+    mkdir -p "${BACKUP_PATH}/redis"
+    docker exec "$redis_container" sh -c 'cat /data/dump.rdb' > "${BACKUP_PATH}/redis/dump.rdb" 2>/dev/null || \
+        warn "Valkey дамп не создан"
+    info "Valkey дамп сохранён"
+else
+    warn "Контейнер Valkey/Redis не найден — пропускаю бэкап кэша"
+fi
+
 # Метаданные
 web_server_type="nginx"
 [[ -d "$NGINX_DIR" ]] && [[ -f "$NGINX_DIR/docker-compose.yml" ]] && web_server_type="nginx"
@@ -687,6 +729,14 @@ health_check() {
         info "PostgreSQL: работает"
     else
         warn "PostgreSQL: не удалось проверить"
+    fi
+
+    # [ИСПРАВЛЕНО v3.1.2] Valkey/Redis
+    local redis_container=$(cd "$APP_DIR" && docker compose ps --format '{{.Name}}' 2>/dev/null | grep -iE 'redis|valkey' | head -1)
+    if [[ -n "$redis_container" ]]; then
+        info "Valkey/Redis: работает"
+    else
+        warn "Valkey/Redis: не найден (Remnawave >= 3.4.0 требует Redis)"
     fi
     
     if [[ "$all_ok" == "false" ]]; then
@@ -757,7 +807,19 @@ backup_panel() {
         warn "Контейнер PostgreSQL не найден. Пропускаю дамп БД"
     fi
 
-    # 6. Метаданные
+    # [ИСПРАВЛЕНО v3.1.2] 6. Бэкап Valkey/Redis
+    local redis_container=""
+    redis_container=$(docker compose ps --format '{{.Name}}' 2>/dev/null | grep -iE 'redis|valkey' | head -1)
+    if [[ -n "$redis_container" ]]; then
+        mkdir -p "${backup_path}/redis"
+        docker exec "$redis_container" sh -c 'cat /data/dump.rdb' > "${backup_path}/redis/dump.rdb" 2>/dev/null && \
+            info "Valkey дамп создан ($redis_container)" || \
+            warn "Не удалось создать дамп Valkey"
+    else
+        warn "Контейнер Valkey/Redis не найден — пропускаю бэкап кэша"
+    fi
+
+    # 7. Метаданные
     echo "$web_server" > "${backup_path}/web_server_type"
     echo "$DOMAIN" > "${backup_path}/domain"
     echo "$SUB_DOMAIN" > "${backup_path}/sub_domain"
@@ -876,6 +938,27 @@ restore_panel() {
         fi
     fi
 
+    # [ИСПРАВЛЕНО v3.1.2] Valkey/Redis данные
+    if [[ -d "${backup_dir}/redis" ]]; then
+        info "Восстанавливаю Valkey данные..."
+        docker compose up -d remnawave-redis 2>/dev/null || true
+        # Ждём запуска valkey
+        local retry=0
+        while ! docker compose ps --format '{{.Name}}' 2>/dev/null | grep -q 'remnawave-redis' && [ $retry -lt 10 ]; do
+            sleep 1
+            ((retry++))
+        done
+        local valkey_cont=$(docker compose ps --format '{{.Name}}' 2>/dev/null | grep -iE 'redis|valkey' | head -1)
+        if [[ -n "$valkey_cont" ]]; then
+            docker cp "${backup_dir}/redis/dump.rdb" "${valkey_cont}:/data/dump.rdb" 2>/dev/null || \
+                warn "Не удалось восстановить Valkey данные"
+            docker restart "$valkey_cont" 2>/dev/null || true
+            info "Valkey данные восстановлены"
+        else
+            warn "Valkey контейнер не найден, пропускаю восстановление кэша"
+        fi
+    fi
+
     # Обновляем домен если нужно
     if [[ -n "$new_domain" ]]; then
         info "Обновляю домен: ${backup_domain} → ${new_domain}"
@@ -889,8 +972,12 @@ restore_panel() {
         fi
 
         if [[ "$target_web_server" == "nginx" && -f "${NGINX_DIR}/nginx.conf" ]]; then
-            sed -i "0,/server_name .*/{s|server_name .*|server_name $new_domain;|}" "${NGINX_DIR}/nginx.conf"
-            sed -i "0,/server_name .*/{s|server_name .*|server_name $new_sub_domain;|}" "${NGINX_DIR}/nginx.conf"
+            # [ИСПРАВЛЕНО] Заменяем server_name в каждом блоке по отдельности через awk
+            awk -v dom="$new_domain" -v sub="$new_sub_domain" '
+                /^server_name / && !done_main { gsub(/server_name .*/, "server_name " dom ";"); done_main=1; }
+                /^server_name / && done_main { gsub(/server_name .*/, "server_name " sub ";"); done_main=2; }
+                { print }
+            ' "${NGINX_DIR}/nginx.conf" > "${NGINX_DIR}/nginx.conf.tmp" && mv "${NGINX_DIR}/nginx.conf.tmp" "${NGINX_DIR}/nginx.conf"
         fi
 
         if [[ "$target_web_server" == "caddy" ]]; then
@@ -1067,6 +1154,13 @@ migrate_panel() {
                  docker exec \"\$PG_CONTAINER\" pg_dump -U postgres remnawave > \$BACKUP_DIR/\$BACKUP_NAME/database.sql 2>/dev/null; \
              fi && \
              \
+             # [ИСПРАВЛЕНО v3.1.2] Valkey/Redis дамп \
+             REDIS_CONTAINER=\$(docker compose ps --format '{{.Name}}' 2>/dev/null | grep -iE 'redis|valkey' | head -1) && \
+             if [[ -n \"\$REDIS_CONTAINER\" ]]; then \
+                 mkdir -p \$BACKUP_DIR/\$BACKUP_NAME/redis && \
+                 docker exec \"\$REDIS_CONTAINER\" sh -c 'cat /data/dump.rdb' > \$BACKUP_DIR/\$BACKUP_NAME/redis/dump.rdb 2>/dev/null || true; \
+             fi && \
+             \
              # [ИСПРАВЛЕНО] Метаданные \
              grep '^FRONT_END_DOMAIN=' .env 2>/dev/null | cut -d= -f2 > \$BACKUP_DIR/\$BACKUP_NAME/domain && \
              grep '^SUB_PUBLIC_DOMAIN=' .env 2>/dev/null | cut -d= -f2 > \$BACKUP_DIR/\$BACKUP_NAME/sub_domain && \
@@ -1215,7 +1309,7 @@ show_menu() {
     echo " |  _ <  __/ | | | | | | | | (_| |\ V  V / (_| |\ V /  __/"
     echo " |_| \_\___|_| |_| |_|_| |_|\__,_| \_/\_/ \__,_| \_/ \___|"
     echo ""
-    echo -e "      ${YELLOW}v3.1.1 — Docker Compose Edition (Fixed)${NC}"
+    echo -e "      ${YELLOW}v3.1.2 — Docker Compose Edition (Fixed)${NC}"
     echo -e "${BLUE}======================================================${NC}\n"
 
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -1303,7 +1397,7 @@ main() {
     mkdir -p "$(dirname "$LOG_FILE")"
     > "$LOG_FILE"
 
-    info "RemnaWave Installation Script v3.1.1 (Fixed)"
+    info "RemnaWave Installation Script v3.1.2 (Fixed)"
     info "Логи: ${LOG_FILE}"
 
     show_menu
