@@ -2,15 +2,15 @@
 
 Скрипт автоматической установки, бэкапа, восстановления и миграции панели RemnaWave для Debian/Ubuntu серверов.
 
-**Версия:** 3.1.1 (Docker Compose Edition)
+**Версия:** 3.1.2 (Docker Compose Edition)
 
 ## Возможности
 
 ### Установка
 - Полная установка RemnaWave через Docker Compose
-- Backend + PostgreSQL в одном контейнере
+- Backend + PostgreSQL + Valkey/Redis в контейнерах
 - Subscription page (страница подписки)
-- SSL-сертификаты через acme.sh (Let's Encrypt)
+- SSL-сертификаты через acme.sh (Let's Encrypt) с автоматической проверкой DNS
 - Выбор веб-сервера: **Nginx** (Docker) или **Caddy** (автоматический SSL)
 - Автоматические бэкапы по cron (ежедневно в 03:00)
 - Health check после установки/обновления
@@ -24,7 +24,8 @@
 - Конфигурация Nginx (nginx.conf)
 - Subscription page (API-токен, docker-compose.yml)
 - Конфигурация Caddy (если используется)
-- **Dump PostgreSQL** (database.sql)\n- **Dump Valkey/Redis** (redis/dump.rdb)
+- **Dump PostgreSQL** (database.sql)
+- **Dump Valkey/Redis** (redis/dump.rdb)
 - Метаданные: домен, поддомен, тип веб-сервера
 - Автобэкап по cron (ежедневно в 03:00, хранит 7 последних копий)
 
@@ -33,14 +34,14 @@
 - Выбор: оставить домен из бэкапа или указать новый
 - Выбор: оставить веб-сервер или сменить (Nginx ↔ Caddy)
 - Автоматическое получение новых SSL-сертификатов при смене домена
-- Восстановление базы данных из dump
+- Восстановление базы данных из dump и Valkey кеша
 - Автоматическая перелинковка подписки при смене домена
 
 ### Миграция
 Перенос панели с одного сервера на другой через SSH:
 - Копирование бэкапа по SSH
-- Fallback: автоматическое создание полного бэкапа (SSL + pg_dump + метаданные)
-- Восстановление на новом сервере
+- Fallback: автоматическое создание полного бэкапа (SSL + pg_dump + Valkey + метаданные)
+- Восстановление на новом сервере с исправленной миграцией nginx.conf
 - Опциональная смена домена
 - Опциональная смена веб-сервера (Nginx ↔ Caddy)
 - Автоматическая генерация SSH-ключа (если нет)
@@ -49,7 +50,7 @@
 - Обновление панели (docker compose pull) + очистка старых образов
 - Удаление панели (с подтверждением)
 - Просмотр статуса (контейнеры, домен, бэкапы)
-- Health check всех сервисов
+- Health check всех сервисов (включая проверку Valkey/Redis)
 
 ## Требования
 
@@ -91,7 +92,7 @@ sudo ./install.sh
 
 ```
 ╔════════════════════════════════════════╗
-║   RemnaWave Panel Installer v3.1.1    ║
+║   RemnaWave Panel Installer v3.1.2    ║
 ╚════════════════════════════════════════╝
 
 Главное меню:
@@ -109,7 +110,7 @@ sudo ./install.sh
 
 ```
 /opt/remnawave/
-├── docker-compose.yml      # Backend (RemnaWave + PostgreSQL)
+├── docker-compose.yml      # Backend (RemnaWave + PostgreSQL + Valkey)
 ├── .env                    # Конфигурация (пароли, APP_SECRET, DB_URL)
 ├── nginx/
 │   ├── docker-compose.yml  # Nginx контейнер
@@ -128,10 +129,12 @@ sudo ./install.sh
 Бэкап создаёт архив со всеми файлами:
 
 ```
-remnawave_backup_20260629_120000.tar.gz
+remnawave_backup_20261004_120000.tar.gz
 ├── .env                    # Все пароли и секреты
 ├── docker-compose.yml      # Backend конфиг
 ├── database.sql            # Dump PostgreSQL
+├── redis/                  # Дамп Valkey (кэш/сессии)
+│   └── dump.rdb
 ├── nginx/
 │   ├── nginx.conf
 │   ├── docker-compose.yml
@@ -239,11 +242,6 @@ docker logs remnawave-nginx
 # Перезапустите
 cd /opt/remnawave && docker compose restart
 ```
-
-### Бэкап не содержит SSL-сертификаты
-Если бэкап был создан старой версией скрипта (до v3.1.1), SSL-ключи могут отсутствовать. В этом случае:
-- Проверьте наличие файлов `fullchain.pem` и `privkey.key` в архиве
-- Если отсутствуют — получите новые сертификаты после восстановления: `~/.acme.sh/acme.sh --renew -d ваш-домен`
 
 ## Лицензия
 
