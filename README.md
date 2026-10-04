@@ -24,7 +24,7 @@
 - Конфигурация Nginx (nginx.conf)
 - Subscription page (API-токен, docker-compose.yml)
 - Конфигурация Caddy (если используется)
-- **Dump PostgreSQL** (database.sql)
+- **Dump PostgreSQL** (database.sql)\n- **Dump Valkey/Redis** (redis/dump.rdb)
 - Метаданные: домен, поддомен, тип веб-сервера
 - Автобэкап по cron (ежедневно в 03:00, хранит 7 последних копий)
 
