@@ -1,4 +1,4 @@
-﻿#!/bin/bash
+#!/bin/bash
 
 # RemnaWave Panel Installation Script
 # Version: 3.1.3 (Docker Compose Edition) — ИСПРАВЛЕННАЯ ВЕРСИЯ
