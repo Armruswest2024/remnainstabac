@@ -82,7 +82,7 @@ run_quiet() {
         echo -e "${RED} ОШИБКА${NC}"
         error "Этап провалился (код $exit_code). Логи: $LOG_FILE"
         return 1
-    fi
+    
 }
 
 # ===================== ГЕНЕРАЦИЯ СЕКРЕТОВ =====================
@@ -99,14 +99,14 @@ check_root() {
     if [[ $EUID -ne 0 ]]; then
         error "Скрипт нужно запускать от root"
         exit 1
-    fi
+    
 }
 
 check_terminal() {
     if [ ! -t 0 ] && [ ! -e /dev/tty ]; then
         error "Запусти скрипт из терминала, а не через pipe"
         exit 1
-    fi
+    
 }
 
 check_requirements() {
@@ -115,23 +115,23 @@ check_requirements() {
     if [[ ! -f /etc/debian_version ]]; then
         error "Поддерживаются только Debian/Ubuntu"
         exit 1
-    fi
+    
 
     local ram=$(free -m | awk '/^Mem:/{print $2}')
     if [[ $ram -lt 1024 ]]; then
         warn "Мало RAM (${ram}MB). Рекомендуется минимум 1GB"
-    fi
+    
 
     local disk=$(df -BG / | awk 'NR==2 {print $4}' | sed 's/G//')
     if [[ $disk -lt 5 ]]; then
         error "Мало места на диске. Нужно минимум 5GB, доступно ${disk}GB"
         exit 1
-    fi
+    
 
     for port in 80 443; do
         if ss -tlnp | grep -q ":$port "; then
             warn "Порт $port уже занят"
-        fi
+        
     done
 
     info "Системные требования OK"
@@ -142,7 +142,7 @@ install_docker() {
     if command -v docker &> /dev/null; then
         info "Docker уже установлен"
         return 0
-    fi
+    
 
     info "Устанавливаю Docker..."
     run_quiet "Скачиваю Docker" bash -c "curl -fsSL https://get.docker.com -o /tmp/install-docker.sh && sh /tmp/install-docker.sh"
@@ -159,27 +159,27 @@ create_directories() {
 }
 
 # ===================== УСТАНОВКА =====================
-configure_installation() {
+congure_installation() {
     echo -e "\n${BLUE}=== Настройка установки ===${NC}\n"
 
     while true; do
         read -rp "Домен панели (напр. panel.example.com): " DOMAIN < /dev/tty
         DOMAIN=$(echo "$DOMAIN" | tr -d '\r' | sed 's/[^a-zA-Z0-9@._-]//g')
-        if [[ -n "$DOMAIN" ]]; then break; fi
+        if [[ -n "$DOMAIN" ]]; then break; 
         error "Домен не может быть пустым"
     done
 
     while true; do
         read -rp "Поддомен подписки (напр. sub.example.com): " SUB_DOMAIN < /dev/tty
         SUB_DOMAIN=$(echo "$SUB_DOMAIN" | tr -d '\r' | sed 's/[^a-zA-Z0-9@._-]//g')
-        if [[ -n "$SUB_DOMAIN" && "$SUB_DOMAIN" != "$DOMAIN" ]]; then break; fi
+        if [[ -n "$SUB_DOMAIN" && "$SUB_DOMAIN" != "$DOMAIN" ]]; then break; 
         error "Поддомен должен быть другим и не пустым"
     done
 
     while true; do
         read -rp "Email для SSL сертификатов: " EMAIL < /dev/tty
         EMAIL=$(echo "$EMAIL" | tr -d '\r' | sed 's/[^a-zA-Z0-9@._+-]//g')
-        if [[ "$EMAIL" =~ ^[^@]+@[^@]+\.[^@]+$ ]]; then break; fi
+        if [[ "$EMAIL" =~ ^[^@]+@[^@]+\.[^@]+$ ]]; then break; 
         error "Введите корректный email"
     done
 
@@ -198,12 +198,12 @@ configure_installation() {
     echo "Email: ${EMAIL}"
     echo "Веб-сервер: ${WEB_SERVER}"
     echo ""
-    read -rp "Продолжить? (yes/no): " confirm < /dev/tty
-    if [[ "$confirm" != "yes" ]]; then
+    read -rp "Продолжить? (yes/no): " conrm < /dev/tty
+    if [[ "$conrm" != "yes" ]]; then
         info "Отменено"
         show_menu
         return
-    fi
+    
 }
 
 # ===================== УСТАНОВКА BACKEND =====================
@@ -222,10 +222,10 @@ install_backend() {
     # [ИСПРАВЛЕНО] Используем APP_SECRET вместо JWT_AUTH_SECRET
     if grep -q "^JWT_AUTH_SECRET=" .env; then
         sed -i "s/^JWT_AUTH_SECRET=.*/APP_SECRET=$(generate_secret)/" .env
-    fi
+    
     if grep -q "^APP_SECRET=" .env; then
         sed -i "s/^APP_SECRET=.*/APP_SECRET=$(generate_secret)/" .env
-    fi
+    
 
     sed -i "s/^JWT_API_TOKENS_SECRET=.*/JWT_API_TOKENS_SECRET=$(generate_secret)/" .env
     sed -i "s/^METRICS_PASS=.*/METRICS_PASS=$(generate_secret)/" .env
@@ -241,7 +241,7 @@ install_backend() {
     # [ИСПРАВЛЕНО v3.1.4] Добавлена переменная SERVICE_SNI_VERIFICATION
     if ! grep -q "^SERVICE_SNI_VERIFICATION=" .env; then
         echo "SERVICE_SNI_VERIFICATION=true" >> .env
-    fi
+    
 
     info "Backend сконфигурирован"
 }
@@ -259,7 +259,7 @@ services:
         container_name: remnawave-subscription-page
         hostname: remnawave-subscription-page
         restart: always
-        env_file:
+        env_le:
             - .env
         ports:
             - '127.0.0.1:3010:3010'
@@ -304,7 +304,7 @@ check_dns() {
             warn "DNS ${domain} указывает на ${resolved_ip}, ожидается ${server_ip}"
         else
             info "DNS ${domain} OK → ${resolved_ip}"
-        fi
+        
     done
 }
 
@@ -321,17 +321,17 @@ install_ssl() {
     run_quiet "Настраиваю Let's Encrypt" ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
 
     run_quiet "Получаю сертификат для $DOMAIN" ~/.acme.sh/acme.sh --issue --standalone -d "$DOMAIN" \
-        --key-file "${NGINX_DIR}/privkey.key" \
-        --fullchain-file "${NGINX_DIR}/fullchain.pem"
+        --key-le "${NGINX_DIR}/privkey.key" \
+        --fullchain-le "${NGINX_DIR}/fullchain.pem"
 
     run_quiet "Получаю сертификат для $SUB_DOMAIN" ~/.acme.sh/acme.sh --issue --standalone -d "$SUB_DOMAIN" \
-        --key-file "${NGINX_DIR}/subdomain_privkey.key" \
-        --fullchain-file "${NGINX_DIR}/subdomain_fullchain.pem"
+        --key-le "${NGINX_DIR}/subdomain_privkey.key" \
+        --fullchain-le "${NGINX_DIR}/subdomain_fullchain.pem"
 
     if [[ ! -f "${NGINX_DIR}/fullchain.pem" ]] || [[ ! -f "${NGINX_DIR}/subdomain_fullchain.pem" ]]; then
         error "Не удалось получить SSL сертификаты. Проверьте DNS и логи."
         return 1
-    fi
+    
 
     info "SSL сертификаты получены"
 }
@@ -382,9 +382,9 @@ server {
     ssl_session_timeout 1d;
     ssl_session_cache shared:MozSSL:10m;
     ssl_session_tickets off;
-    ssl_certificate "/etc/nginx/ssl/fullchain.pem";
-    ssl_certificate_key "/etc/nginx/ssl/privkey.key";
-    ssl_trusted_certificate "/etc/nginx/ssl/fullchain.pem";
+    ssl_certicate "/etc/nginx/ssl/fullchain.pem";
+    ssl_certicate_key "/etc/nginx/ssl/privkey.key";
+    ssl_trusted_certicate "/etc/nginx/ssl/fullchain.pem";
     ssl_stapling on;
     ssl_stapling_verify on;
     resolver 1.1.1.1 1.0.0.1 8.8.8.8 8.8.4.4 208.67.222.222 208.67.220.220 valid=60s;
@@ -425,9 +425,9 @@ server {
     ssl_session_timeout 1d;
     ssl_session_cache shared:MozSSL:10m;
     ssl_session_tickets off;
-    ssl_certificate "/etc/nginx/ssl/subdomain_fullchain.pem";
-    ssl_certificate_key "/etc/nginx/ssl/subdomain_privkey.key";
-    ssl_trusted_certificate "/etc/nginx/ssl/subdomain_fullchain.pem";
+    ssl_certicate "/etc/nginx/ssl/subdomain_fullchain.pem";
+    ssl_certicate_key "/etc/nginx/ssl/subdomain_privkey.key";
+    ssl_trusted_certicate "/etc/nginx/ssl/subdomain_fullchain.pem";
     ssl_stapling on;
     ssl_stapling_verify on;
     resolver 1.1.1.1 1.0.0.1 8.8.8.8 8.8.4.4 208.67.222.222 208.67.220.220 valid=60s;
@@ -490,7 +490,7 @@ setup_caddy() {
         apt-get install -y -qq caddy
     "
 
-    cat > /etc/caddy/Caddyfile <<EOF
+    cat > /etc/caddy/Caddyle <<EOF
 ${DOMAIN}, www.${DOMAIN} {
     reverse_proxy remnawave:3000
 
@@ -532,7 +532,7 @@ start_services() {
     else
         setup_caddy
         systemctl enable --now caddy
-    fi
+    
 
     info "Все сервисы запущены"
 }
@@ -551,7 +551,7 @@ link_subscription() {
         TOKEN=$(echo "$TOKEN" | tr -d '\r' | xargs)
         if [ -z "$TOKEN" ]; then
             error "Токен не может быть пустым"
-        fi
+        
     done
 
     cd "$SUB_DIR"
@@ -566,7 +566,7 @@ full_install() {
     check_requirements
     install_docker
     create_directories
-    configure_installation
+    congure_installation
     install_backend
     install_subscription
     install_ssl
@@ -635,20 +635,20 @@ if [[ -d "$NGINX_DIR" ]]; then
     cp "${NGINX_DIR}/privkey.key" "${BACKUP_PATH}/nginx/privkey.key" 2>/dev/null || true
     cp "${NGINX_DIR}/subdomain_fullchain.pem" "${BACKUP_PATH}/nginx/subdomain_fullchain.pem" 2>/dev/null || true
     cp "${NGINX_DIR}/subdomain_privkey.key" "${BACKUP_PATH}/nginx/subdomain_privkey.key" 2>/dev/null || true
-fi
+
 
 # Caddy
-if [[ -f /etc/caddy/Caddyfile ]]; then
+if [[ -f /etc/caddy/Caddyle ]]; then
     mkdir -p "${BACKUP_PATH}/caddy"
-    cp /etc/caddy/Caddyfile "${BACKUP_PATH}/caddy/Caddyfile" 2>/dev/null || true
-fi
+    cp /etc/caddy/Caddyle "${BACKUP_PATH}/caddy/Caddyle" 2>/dev/null || true
+
 
 # [ИСПРАВЛЕНО] База данных — pg_dump
 pg_container=$(cd "$APP_DIR" && docker compose ps --format '{{.Name}}' 2>/dev/null | grep -i postgres | head -1)
 if [[ -n "$pg_container" ]]; then
     docker exec "$pg_container" pg_dump -U postgres postgres > "${BACKUP_PATH}/database.sql" 2>/dev/null || \
         echo "$(date '+%Y-%m-%d %H:%M:%S') ОШИБКА: pg_dump не удался" >> /var/log/remnawave_backup.log
-fi
+
 
 # [ИСПРАВЛЕНО v3.1.2] Valkey/Redis — данные кэша и сессий (Remnawave >= 3.4.0)
 redis_container=$(cd "$APP_DIR" && docker compose ps --format '{{.Name}}' 2>/dev/null | grep -iE 'redis|valkey' | head -1)
@@ -659,12 +659,12 @@ if [[ -n "$redis_container" ]]; then
     info "Valkey дамп сохранён"
 else
     warn "Контейнер Valkey/Redis не найден — пропускаю бэкап кэша"
-fi
+
 
 # Метаданные
 web_server_type="nginx"
 [[ -d "$NGINX_DIR" ]] && [[ -f "$NGINX_DIR/docker-compose.yml" ]] && web_server_type="nginx"
-[[ -f "/etc/caddy/Caddyfile" ]] && web_server_type="caddy"
+[[ -f "/etc/caddy/Caddyle" ]] && web_server_type="caddy"
 echo "$web_server_type" > "${BACKUP_PATH}/web_server_type"
 grep "^PANEL_DOMAIN=" .env 2>/dev/null | cut -d= -f2 > "${BACKUP_PATH}/domain"
 grep "^SUB_PUBLIC_DOMAIN=" .env 2>/dev/null | cut -d= -f2 > "${BACKUP_PATH}/sub_domain"
@@ -687,7 +687,7 @@ BACKUP_SCRIPT
         info "Автобэкап настроен: ежедневно в 03:00"
     else
         info "Автобэкап уже настроен"
-    fi
+    
 }
 
 # ===================== HEALTH CHECK =====================
@@ -702,14 +702,14 @@ health_check() {
     else
         error "Backend: не запущен"
         all_ok=false
-    fi
+    
     
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "remnawave-subscription"; then
         info "Subscription: работает"
     else
         error "Subscription: не запущен"
         all_ok=false
-    fi
+    
     
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "remnawave-nginx"; then
         info "Nginx: работает"
@@ -718,14 +718,14 @@ health_check() {
     else
         error "Веб-сервер: не запущен"
         all_ok=false
-    fi
+    
     
     local pg_container=$(cd "$APP_DIR" && docker compose ps --format '{{.Name}}' 2>/dev/null | grep -i postgres | head -1)
     if [[ -n "$pg_container" ]] && docker exec "$pg_container" pg_isready -q 2>/dev/null; then
         info "PostgreSQL: работает"
     else
         warn "PostgreSQL: не удалось проверить"
-    fi
+    
 
     # [ИСПРАВЛЕНО v3.1.2] Valkey/Redis
     local redis_container=$(cd "$APP_DIR" && docker compose ps --format '{{.Name}}' 2>/dev/null | grep -iE 'redis|valkey' | head -1)
@@ -733,11 +733,11 @@ health_check() {
         info "Valkey/Redis: работает"
     else
         warn "Valkey/Redis: не найден (Remnawave >= 3.4.0 требует Redis)"
-    fi
+    
     
     if [[ "$all_ok" == "false" ]]; then
         warn "Некоторые сервисы не запущены. Проверьте логи: docker logs <container_name>"
-    fi
+    
 }
 
 # ===================== БЭКАП =====================
@@ -751,9 +751,9 @@ backup_panel() {
     local web_server="unknown"
     if [[ -d "$NGINX_DIR" ]] && [[ -f "$NGINX_DIR/docker-compose.yml" ]]; then
         web_server="nginx"
-    elif [[ -f "/etc/caddy/Caddyfile" ]]; then
+    elif [[ -f "/etc/caddy/Caddyle" ]]; then
         web_server="caddy"
-    fi
+    
 
     # 1. Backend конфиги
     info "Копирую конфиги backend..."
@@ -777,17 +777,17 @@ backup_panel() {
         cp "${NGINX_DIR}/privkey.key" "${backup_path}/nginx/privkey.key" 2>/dev/null || true
         cp "${NGINX_DIR}/subdomain_fullchain.pem" "${backup_path}/nginx/subdomain_fullchain.pem" 2>/dev/null || true
         cp "${NGINX_DIR}/subdomain_privkey.key" "${backup_path}/nginx/subdomain_privkey.key" 2>/dev/null || true
-    fi
+    
 
     # 4. Caddy конфиг
-    if [[ -f "/etc/caddy/Caddyfile" ]]; then
+    if [[ -f "/etc/caddy/Caddyle" ]]; then
         info "Копирую Caddy конфиг..."
         mkdir -p "${backup_path}/caddy"
-        cp "/etc/caddy/Caddyfile" "${backup_path}/caddy/Caddyfile" 2>/dev/null || true
+        cp "/etc/caddy/Caddyle" "${backup_path}/caddy/Caddyle" 2>/dev/null || true
         if [[ -d "/var/lib/caddy" ]]; then
             cp -r "/var/lib/caddy" "${backup_path}/caddy/data" 2>/dev/null || true
-        fi
-    fi
+        
+    
 
     # [ИСПРАВЛЕНО] 5. Бэкап базы данных — pg_dump
     info "Создаю дамп базы данных..."
@@ -801,7 +801,7 @@ backup_panel() {
             warn "Не удалось создать дамп базы данных"
     else
         warn "Контейнер PostgreSQL не найден. Пропускаю дамп БД"
-    fi
+    
 
     # [ИСПРАВЛЕНО v3.1.2] 6. Бэкап Valkey/Redis
     local redis_container=""
@@ -813,7 +813,7 @@ backup_panel() {
             warn "Не удалось создать дамп Valkey"
     else
         warn "Контейнер Valkey/Redis не найден — пропускаю бэкап кэша"
-    fi
+    
 
     # 7. Метаданные
     echo "$web_server" > "${backup_path}/web_server_type"
@@ -834,12 +834,12 @@ backup_panel() {
 
 # ===================== ВОССТАНОВЛЕНИЕ =====================
 restore_panel() {
-    local backup_file="$1"
+    local backup_le="$1"
 
-    if [[ ! -f "$backup_file" ]]; then
-        error "Файл бэкапа не найден: $backup_file"
+    if [[ ! -f "$backup_le" ]]; then
+        error "Файл бэкапа не найден: $backup_le"
         return 1
-    fi
+    
 
     info "Восстанавливаю из бэкапа..."
 
@@ -851,14 +851,14 @@ restore_panel() {
 
     # Распаковываем
     local temp_dir=$(mktemp -d)
-    tar -xzf "$backup_file" -C "$temp_dir"
+    tar -xzf "$backup_le" -C "$temp_dir"
 
-    local backup_dir=$(find "$temp_dir" -maxdepth 1 -type d -name "remnawave_backup_*" | head -1)
+    local backup_dir=$(nd "$temp_dir" -maxdepth 1 -type d -name "remnawave_backup_*" | head -1)
     if [[ -z "$backup_dir" ]]; then
         error "Неверная структура бэкапа"
         rm -rf "$temp_dir"
         return 1
-    fi
+    
 
     # Читаем метаданные
     local backup_domain=""
@@ -890,7 +890,7 @@ restore_panel() {
         new_sub_domain=$(echo "$new_sub_domain" | tr -d '\r' | sed 's/[^a-zA-Z0-9@._-]//g')
         read -rp "Email для SSL: " new_email < /dev/tty
         new_email=$(echo "$new_email" | tr -d '\r' | sed 's/[^a-zA-Z0-9@._+-]//g')
-    fi
+    
 
     # Спрашиваем веб-сервер
     echo "Веб-сервер в бэкапе: ${backup_web_server}"
@@ -922,17 +922,17 @@ restore_panel() {
     if [[ -d "${backup_dir}/nginx" ]]; then
         mkdir -p "$NGINX_DIR"
         cp -r "${backup_dir}/nginx/"* "$NGINX_DIR/" 2>/dev/null || true
-    fi
+    
 
     # Caddy
     if [[ -d "${backup_dir}/caddy" ]]; then
         mkdir -p /etc/caddy
-        [[ -f "${backup_dir}/caddy/Caddyfile" ]] && cp "${backup_dir}/caddy/Caddyfile" /etc/caddy/Caddyfile
+        [[ -f "${backup_dir}/caddy/Caddyle" ]] && cp "${backup_dir}/caddy/Caddyle" /etc/caddy/Caddyle
         if [[ -d "${backup_dir}/caddy/data" ]]; then
             mkdir -p /var/lib/caddy
             cp -r "${backup_dir}/caddy/data/"* /var/lib/caddy/ 2>/dev/null || true
-        fi
-    fi
+        
+    
 
     # [ИСПРАВЛЕНО v3.1.3] Найдём реальный контейнер Redis/Valkey вместо жёсткой привязки
     if [[ -d "${backup_dir}/redis" ]]; then
@@ -953,8 +953,8 @@ restore_panel() {
             info "Valkey данные восстановлены"
         else
             warn "Valkey контейнер не найден, пропускаю восстановление кэша"
-        fi
-    fi
+        
+    
 
     # Обновляем домен если нужно
     if [[ -n "$new_domain" ]]; then
@@ -966,7 +966,7 @@ restore_panel() {
         # Обновляем в .env подписки
         if [[ -f "${SUB_DIR}/.env" ]]; then
             sed -i "s|^REMNAWAVE_PANEL_URL=.*|REMNAWAVE_PANEL_URL=http://remnawave:3000|" "${SUB_DIR}/.env"
-        fi
+        
 
         if [[ "$target_web_server" == "nginx" && -f "${NGINX_DIR}/nginx.conf" ]]; then
             # [ИСПРАВЛЕНО v3.1.3] Добавлен BEGIN блок для корректной работы awk
@@ -975,12 +975,12 @@ restore_panel() {
                 /^server_name / && done_main { gsub(/server_name .*/, "server_name " sub ";"); done_main=2; }
                 { print }
             ' "${NGINX_DIR}/nginx.conf" > "${NGINX_DIR}/nginx.conf.tmp" && mv "${NGINX_DIR}/nginx.conf.tmp" "${NGINX_DIR}/nginx.conf"
-        fi
+        
 
         if [[ "$target_web_server" == "caddy" ]]; then
-            sed -i "s|^${backup_domain}.*|${new_domain}|" /etc/caddy/Caddyfile
-            sed -i "s|^${backup_sub_domain}.*|${new_sub_domain}|" /etc/caddy/Caddyfile
-        fi
+            sed -i "s|^${backup_domain}.*|${new_domain}|" /etc/caddy/Caddyle
+            sed -i "s|^${backup_sub_domain}.*|${new_sub_domain}|" /etc/caddy/Caddyle
+        
 
         # Получаем новые SSL (если домен изменился)
         if [[ -n "$new_email" ]]; then
@@ -988,13 +988,13 @@ restore_panel() {
             export PATH="$HOME/.acme.sh:$PATH"
             ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
             ~/.acme.sh/acme.sh --issue --standalone -d "$new_domain" \
-                --key-file "${NGINX_DIR}/privkey.key" \
-                --fullchain-file "${NGINX_DIR}/fullchain.pem" || warn "SSL для панели не получен"
+                --key-le "${NGINX_DIR}/privkey.key" \
+                --fullchain-le "${NGINX_DIR}/fullchain.pem" || warn "SSL для панели не получен"
             ~/.acme.sh/acme.sh --issue --standalone -d "$new_sub_domain" \
-                --key-file "${NGINX_DIR}/subdomain_privkey.key" \
-                --fullchain-file "${NGINX_DIR}/subdomain_fullchain.pem" || warn "SSL для подписки не получен"
-        fi
-    fi
+                --key-le "${NGINX_DIR}/subdomain_privkey.key" \
+                --fullchain-le "${NGINX_DIR}/subdomain_fullchain.pem" || warn "SSL для подписки не получен"
+        
+    
 
     # Создаём Docker сеть если не существует
     docker network create remnawave-network 2>/dev/null || true
@@ -1026,8 +1026,8 @@ restore_panel() {
                 warn "Ошибка восстановления базы данных"
         else
             warn "Дамп базы данных не найден в бэкапе"
-        fi
-    fi
+        
+    
 
     # Запускаем остальные сервисы
     info "Запускаю сервисы..."
@@ -1037,7 +1037,7 @@ restore_panel() {
         cd "$NGINX_DIR" && docker compose up -d
     else
         systemctl enable --now caddy
-    fi
+    
 
     rm -rf "$temp_dir"
 
@@ -1045,7 +1045,7 @@ restore_panel() {
     if [[ -n "$new_domain" ]]; then
         info "Перелинковываю подписку с новым доменом..."
         link_subscription
-    fi
+    
 
     health_check
 
@@ -1077,7 +1077,7 @@ migrate_panel() {
         new_sub_domain=$(echo "$new_sub_domain" | tr -d '\r' | sed 's/[^a-zA-Z0-9@._-]//g')
         read -rp "Email для SSL: " new_email < /dev/tty
         new_email=$(echo "$new_email" | tr -d '\r' | sed 's/[^a-zA-Z0-9@._+-]//g')
-    fi
+    
 
     echo "Выберите веб-сервер на новом сервере:"
     echo "  1) Оставить как на исходном"
@@ -1095,14 +1095,14 @@ migrate_panel() {
     if [[ ! -f ~/.ssh/id_rsa ]]; then
         info "Генерирую SSH ключ..."
         ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N "" -q
-    fi
+    
 
     # Тест подключения
     info "Проверяю подключение к ${source_server}..."
     if ! ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -p "$source_port" "${source_user}@${source_server}" "echo OK" > /dev/null 2>&1; then
         error "Не удалось подключиться к ${source_server}"
         return 1
-    fi
+    
     info "Подключение OK"
 
     # Копируем бэкап
@@ -1143,26 +1143,26 @@ migrate_panel() {
              \
              # Caddy \
              mkdir -p \$BACKUP_DIR/\$BACKUP_NAME/caddy && \
-             cp /etc/caddy/Caddyfile \$BACKUP_DIR/\$BACKUP_NAME/caddy/ 2>/dev/null && \
+             cp /etc/caddy/Caddyle \$BACKUP_DIR/\$BACKUP_NAME/caddy/ 2>/dev/null && \
              \
              # [ИСПРАВЛЕНО] pg_dump \
              PG_CONTAINER=\$(docker compose ps --format '{{.Name}}' 2>/dev/null | grep -i postgres | head -1) && \
              if [[ -n \"\$PG_CONTAINER\" ]]; then \
                  docker exec \"\$PG_CONTAINER\" pg_dump -U postgres postgres > \$BACKUP_DIR/\$BACKUP_NAME/database.sql 2>/dev/null; \
-             fi && \
+              && \
              \
              # [ИСПРАВЛЕНО v3.1.2] Valkey/Redis дамп \
              REDIS_CONTAINER=\$(docker compose ps --format '{{.Name}}' 2>/dev/null | grep -iE 'redis|valkey' | head -1) && \
              if [[ -n \"\$REDIS_CONTAINER\" ]]; then \
                  mkdir -p \$BACKUP_DIR/\$BACKUP_NAME/redis && \
                  docker exec \"\$REDIS_CONTAINER\" sh -c 'cat /data/dump.rdb' > \$BACKUP_DIR/\$BACKUP_NAME/redis/dump.rdb 2>/dev/null || true; \
-             fi && \
+              && \
              \
              # [ИСПРАВЛЕНО] Метаданные \
              grep "^PANEL_DOMAIN=" .env 2>/dev/null | cut -d= -f2 > "${BACKUP_DIR}/${BACKUP_NAME}/domain"
              grep '^SUB_PUBLIC_DOMAIN=' .env 2>/dev/null | cut -d= -f2 > \$BACKUP_DIR/\$BACKUP_NAME/sub_domain && \
              echo 'nginx' > \$BACKUP_DIR/\$BACKUP_NAME/web_server_type && \
-             [[ -f /etc/caddy/Caddyfile ]] && echo 'caddy' > \$BACKUP_DIR/\$BACKUP_NAME/web_server_type; \
+             [[ -f /etc/caddy/Caddyle ]] && echo 'caddy' > \$BACKUP_DIR/\$BACKUP_NAME/web_server_type; \
              \
              # Архив \
              cd \$BACKUP_DIR && \
@@ -1185,14 +1185,14 @@ migrate_panel() {
             error "Не удалось скопировать бэкап с исходного сервера"
             return 1
         }
-    fi
+    
 
     # Находим последний бэкап
     local latest_backup=$(ls -t "${BACKUP_DIR}"/remnawave_backup_*.tar.gz 2>/dev/null | head -1)
     if [[ -z "$latest_backup" ]]; then
         error "Бэкап не найден"
         return 1
-    fi
+    
 
     info "Бэкап: $latest_backup"
 
@@ -1202,11 +1202,11 @@ migrate_panel() {
         DOMAIN="$new_domain"
         SUB_DOMAIN="$new_sub_domain"
         EMAIL="$new_email"
-    fi
+    
 
     if [[ "$target_web_server" != "source" ]]; then
         WEB_SERVER="$target_web_server"
-    fi
+    
 
     restore_panel "$latest_backup"
 
@@ -1214,7 +1214,7 @@ migrate_panel() {
     if [[ -n "$new_domain" ]]; then
         echo -e "Новый домен: ${CYAN}https://${new_domain}${NC}"
         echo -e "${YELLOW}Убедись, что DNS записи указывают на IP нового сервера${NC}"
-    fi
+    
     echo ""
 }
 
@@ -1246,12 +1246,12 @@ update_panel() {
 # ===================== УДАЛЕНИЕ =====================
 uninstall_panel() {
     warn "Это удалит RemnaWave и все данные!"
-    read -rp "Введите 'yes' для подтверждения: " confirm < /dev/tty
+    read -rp "Введите 'yes' для подтверждения: " conrm < /dev/tty
 
-    if [[ "$confirm" != "yes" ]]; then
+    if [[ "$conrm" != "yes" ]]; then
         info "Отменено"
         return
-    fi
+    
 
     systemctl stop caddy 2>/dev/null || true
     systemctl disable caddy 2>/dev/null || true
@@ -1261,7 +1261,7 @@ uninstall_panel() {
     cd "$APP_DIR" 2>/dev/null && docker compose down 2>/dev/null || true
 
     rm -rf "$APP_DIR"
-    rm -f /etc/caddy/Caddyfile
+    rm -f /etc/caddy/Caddyle
 
     docker container prune -f 2>/dev/null || true
     docker image prune -f 2>/dev/null || true
@@ -1279,13 +1279,13 @@ show_status() {
         echo -e "Backend:    ${GREEN}Запущен${NC}"
     else
         echo -e "Backend:    ${RED}Остановлен${NC}"
-    fi
+    
 
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "remnawave-subscription"; then
         echo -e "Subscription: ${GREEN}Запущен${NC}"
     else
         echo -e "Subscription: ${RED}Остановлен${NC}"
-    fi
+    
 
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "remnawave-nginx"; then
         echo -e "Nginx:      ${GREEN}Запущен${NC}"
@@ -1293,12 +1293,12 @@ show_status() {
         echo -e "Caddy:      ${GREEN}Запущен${NC}"
     else
         echo -e "Веб-сервер: ${RED}Остановлен${NC}"
-    fi
+    
 
     if [[ -f "$CONFIG_FILE" ]]; then
         local domain=$(grep "^PANEL_DOMAIN=" "$CONFIG_FILE" | cut -d= -f2)
         echo -e "Домен:      ${domain:-не настроен}"
-    fi
+    
 
     local backup_count=$(ls -1 "${BACKUP_DIR}"/remnawave_backup_*.tar.gz 2>/dev/null | wc -l)
     echo -e "Бэкапы:     $backup_count"
@@ -1321,7 +1321,7 @@ show_menu() {
 
     if [[ -f "$CONFIG_FILE" ]]; then
         show_status
-    fi
+    
 
     echo -e "${BLUE}Главное меню:${NC}"
     echo "  1) Чистая установка"
@@ -1353,8 +1353,8 @@ show_menu() {
             echo "Доступные бэкапы:"
             ls -lh "${BACKUP_DIR}"/remnawave_backup_*.tar.gz 2>/dev/null || echo "Бэкапы не найдены"
             echo ""
-            read -rp "Путь к бэкапу: " backup_file < /dev/tty
-            restore_panel "$backup_file"
+            read -rp "Путь к бэкапу: " backup_le < /dev/tty
+            restore_panel "$backup_le"
             echo -e "\n${GREEN}Нажмите Enter для продолжения...${NC}"
             read < /dev/tty
             show_menu
@@ -1410,8 +1410,8 @@ main() {
     show_menu
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
-fi
+# if removed
+main "$@"
+
 
 
