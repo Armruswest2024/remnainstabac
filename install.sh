@@ -1,7 +1,5 @@
 #!/bin/bash
 
-# set -euo pipefail
-
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -18,16 +16,9 @@ BACKUP_DIR="${APP_DIR}/backups"
 LOG_FILE="/var/log/remnawave_install.log"
 CONFIG_FILE="${APP_DIR}/.env"
 
-info() { echo -e "${GREEN}[✓]${NC} $1"; log "INFO" "$1"; }
-warn() { echo -e "${YELLOW}[!]${NC} $1"; log "WARN" "$1"; }
-error() { echo -e "${RED}[✗]${NC} $1"; log "ERROR" "$1"; }
-
-log() {
-    local level="$1"
-    local message="$2"
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo -e "${timestamp} [${level}] ${message}" | tee -a "$LOG_FILE"
-}
+info() { echo -e "${GREEN}[✓]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[✗]${NC} $1"; }
 
 backup_panel() {
     info "Создаю резервную копию..."
@@ -156,9 +147,9 @@ restore_panel() {
 }
 
 show_status() {
-    echo -e "${CYAN}═══════════════════════════════════════${NC}"
-    echo -e "${CYAN}   Статус RemnaWave Panel${NC}"
-    echo -e "${CYAN}═══════════════════════════════════════${NC}"
+    echo -e "${CYAN}=======================================${NC}"
+    echo -e "${CYAN}   Статус RemnaWave Panel              ${NC}"
+    echo -e "${CYAN}=======================================${NC}"
 
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "remnawave"; then
         echo -e "Backend:    ${GREEN}Запущен${NC}"
@@ -174,62 +165,65 @@ show_status() {
 
     local backup_count=$(ls -1 "${BACKUP_DIR}"/remnawave_backup_*.tar.gz 2>/dev/null | wc -l)
     echo -e "Бэкапы:     $backup_count"
-    echo -e "${CYAN}═══════════════════════════════════════${NC}"
+    echo -e "${CYAN}=======================================${NC}"
 }
 
 show_menu() {
     clear
     echo -e "${BLUE}${BOLD}"
-    echo "  ____                                                  "
-    echo " |  _ \ ___ _ __ ___  _ __   __ ___      ____ ___   _____ "
-    echo " | |_) / _ \ '_ \ _ \| '_ \ / _\` \ \ /\ / / _` \ \ / / _ \\"
-    echo " |  _ <  __/ | | | | | | | | (_| |\ V  V / (_| |\ V /  __/"
-    echo " |_| \_\___|_| |_| |_|_| |_|\__,_| \_/\_/ \__,_| \_/ \___|"
-    echo ""
-    echo -e "      ${YELLOW}v3.1.5 — Docker Compose Edition (Stable)${NC}"
-    echo -e "${BLUE}======================================================${NC}\n"
+    echo "======================================================"
+    echo "       REMNAWAVE PANEL - BACKUP & RESTORE             "
+    echo "======================================================${NC}\n"
 
     if [[ -f "$CONFIG_FILE" ]]; then
         show_status
     fi
 
-    echo -e "${BLUE}Главное меню:${NC}"
-    echo "  1) Создать бэкап"
-    echo "  2) Восстановить из бэкапа"
-    echo "  3) Показать статус"
-    echo "  4) Выход"
+    echo -e "${BLUE}Main Menu:${NC}"
+    echo "  1) Create Backup"
+    echo "  2) Restore from Backup"
+    echo "  3) Show Status"
+    echo "  4) Exit"
     echo ""
-    if [ -e /dev/tty ]; then read -rp "Выберите опцию [1-4]: " choice < /dev/tty; else read -p "Выберите опцию [1-4]: " choice; fi
+    if [ -e /dev/tty ]; then
+        read -rp "Select option [1-4]: " choice < /dev/tty
+    else
+        read -p "Select option [1-4]: " choice
+    fi
 
     case $choice in
         1)
             backup_panel
-            echo -e "\n${GREEN}Нажмите Enter для продолжения...${NC}"
-            read < /dev/tty
+            echo -e "\n${GREEN}Press Enter to continue...${NC}"
+            if [ -e /dev/tty ]; then read < /dev/tty; else read; fi
             show_menu
             ;;
         2)
-            echo "Доступные бэкапы:"
-            ls -lh "${BACKUP_DIR}"/remnawave_backup_*.tar.gz 2>/dev/null || echo "Бэкапы не найдены"
+            echo "Available backups:"
+            ls -lh "${BACKUP_DIR}"/remnawave_backup_*.tar.gz 2>/dev/null || echo "No backups found"
             echo ""
-            read -rp "Путь к бэкапу: " backup_file < /dev/tty
+            if [ -e /dev/tty ]; then
+                read -rp "Path to backup: " backup_file < /dev/tty
+            else
+                read -p "Path to backup: " backup_file
+            fi
             restore_panel "$backup_file"
-            echo -e "\n${GREEN}Нажмите Enter для продолжения...${NC}"
-            read < /dev/tty
+            echo -e "\n${GREEN}Press Enter to continue...${NC}"
+            if [ -e /dev/tty ]; then read < /dev/tty; else read; fi
             show_menu
             ;;
         3)
             show_status
-            echo -e "\n${GREEN}Нажмите Enter для продолжения...${NC}"
-            read < /dev/tty
+            echo -e "\n${GREEN}Press Enter to continue...${NC}"
+            if [ -e /dev/tty ]; then read < /dev/tty; else read; fi
             show_menu
             ;;
         4)
-            info "Выход"
+            info "Exit"
             exit 0
             ;;
         *)
-            warn "Неверный выбор"
+            warn "Invalid choice"
             sleep 1
             show_menu
             ;;
@@ -238,7 +232,7 @@ show_menu() {
 
 main() {
     if [[ $EUID -ne 0 ]]; then
-        echo "Скрипт нужно запускать от root"
+        echo "Run script as root"
         exit 1
     fi
     mkdir -p "$(dirname "$LOG_FILE")"
