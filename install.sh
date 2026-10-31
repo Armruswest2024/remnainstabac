@@ -1412,3 +1412,4 @@ main() {
 
 main "$@"
 main "$@"
+main "$@"
