@@ -1410,8 +1410,5 @@ main() {
     show_menu
 }
 
-# if removed
 main "$@"
-
-
-
+main "$@"
