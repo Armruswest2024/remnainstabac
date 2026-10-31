@@ -1,61 +1,37 @@
-# RemnaWave Panel Installer
+# RemnaWave Panel Backup & Restore
 
-Скрипт автоматической установки, бэкапа, восстановления и миграции панели RemnaWave для Debian/Ubuntu серверов.
+Скрипт резервного копирования и восстановления панели RemnaWave для Debian/Ubuntu серверов.
 
-**Версия:** 3.1.3 (Docker Compose Edition)
+**Версия:** 3.1.5 (Stable)
 
 ## Возможности
 
-### Установка
-- Полная установка RemnaWave через Docker Compose
-- Backend + PostgreSQL + Valkey/Redis в контейнерах
-- Subscription page (страница подписки)
-- SSL-сертификаты через acme.sh (Let's Encrypt) с автоматической проверкой DNS
-- Выбор веб-сервера: **Nginx** (Docker) или **Caddy** (автоматический SSL)
-- Автоматические бэкапы по cron (ежедневно в 03:00)
-- Health check после установки/обновления
-- Поддержка APP_SECRET (Remnawave >= v2.8.1)
-
 ### Бэкап
-Автоматическое создание резервной копии **всех** данных:
-- `.env` — пароли, APP_SECRET, JWT_API_TOKENS_SECRET, URL базы данных
-- `docker-compose.yml` — конфигурация backend
-- SSL-сертификаты (fullchain.pem, privkey.key) для панели и подписки
-- Конфигурация Nginx (nginx.conf)
+Полное резервное копирование:
+- `.env` — пароли, секреты, конфигурация
+- `docker-compose.yml` — конфигурация контейнеров
+- SSL-сертификаты (fullchain.pem, privkey.key)
+- Nginx конфигурация (nginx.conf)
 - Subscription page (API-токен, docker-compose.yml)
-- Конфигурация Caddy (если используется)
-- **Dump PostgreSQL** (database.sql)
-- **Dump Valkey/Redis** (redis/dump.rdb)
-- Метаданные: домен, поддомен, тип веб-сервера
-- Автобэкап по cron (ежедневно в 03:00, хранит 7 последних копий)
+- **Сжатый дамп PostgreSQL** через `pg_dumpall`
+- Метаданные: домен, тип веб-сервера
+- Всё упаковывается в `.tar.gz` архив
 
 ### Восстановление
-Восстановление из бэкапа на **тот же** или **другой** сервер:
-- Выбор: оставить домен из бэкапа или указать новый
-- Выбор: оставить веб-сервер или сменить (Nginx ↔ Caddy)
-- Автоматическое получение новых SSL-сертификатов при смене домена
-- Восстановление базы данных из dump и Valkey кеша
-- Автоматическая перелинковка подписки при смене домена
-
-### Миграция
-Перенос панели с одного сервера на другой через SSH:
-- Копирование бэкапа по SSH
-- Fallback: автоматическое создание полного бэкапа (SSL + pg_dump + Valkey + метаданные)
-- Восстановление на новом сервере с исправленной миграцией nginx.conf
-- Опциональная смена домена
-- Опциональная смена веб-сервера (Nginx ↔ Caddy)
-- Автоматическая генерация SSH-ключа (если нет)
+Восстановление из бэкапа на **тот же или другой сервер**:
+- Автоматический даун контнейнеров
+- Распаковка файлов из архива
+- Восстановление базы данных из `.sql.gz` дампа
+- Поднятие сервисов в правильном порядке
 
 ## Требования
 
 - **ОС:** Debian 10+ / Ubuntu 20.04+
-- **RAM:** минимум 1GB (рекомендуется 2GB+)
-- **Диск:** минимум 5GB свободного места
-- **Доступ:** root (или sudo)
-- **Порты:** 80 и 443 (должны быть свободны)
-- **Сеть:** доступ к интернету
+- **Доступ:** root
+- **Docker:** установлен и работает
+- **Контейнер БД:** `remnawave-db` (стандартный из docker-compose)
 
-## Установка
+## Установка и запуск
 
 ```bash
 curl -sL https://raw.githubusercontent.com/Armruswest2024/remnainstabac/main/install.sh | bash
@@ -64,24 +40,36 @@ curl -sL https://raw.githubusercontent.com/Armruswest2024/remnainstabac/main/ins
 ## Меню
 
 ```
-  ____                                                  
- |  _ \ ___ _ __ ___  _ __   __ ___      ____ ___   _____ 
- | |_) / _ \ '_ \ _ \| '_ \ / _` \ \ /\ / / _` \ \ / / _ \
- |  _ <  __/ | | | | | | | | (_| |\ V  V / (_| |\ V /  __/
- |_| \_\___|_| |_| |_|_| |_|\__,_| \_/\_/ \__,_| \_/ \___|
+======================================================
+       REMNAWAVE PANEL - BACKUP & RESTORE
+======================================================
 
-  v3.1.3 — Docker Compose Edition
-=======================================================
+Backend:    Запущен
+Subscription: Запущен
+Бэкапы:     0
 
-Главное меню:
-  1) Чистая установка
-  2) Миграция (с другого сервера)
-  3) Создать бэкап
-  4) Восстановить из бэкапа
-  5) Обновить панель
-  6) Удалить панель
-  7) Показать статус
-  8) Выход
+Main Menu:
+  1) Create Backup
+  2) Restore from Backup
+  3) Show Status
+  4) Exit
+```
+
+## Перенос между серверами
+
+Скрипт создаёт полный бэкап, который можно перенести вручную:
+
+```bash
+# 1. Создать бэкап на старом сервере
+curl -sL https://raw.githubusercontent.com/Armruswest2024/remnainstabac/main/install.sh | bash
+# Выбрать пункт 1) Create Backup
+
+# 2. Скопировать бэкап на новый сервер
+scp /opt/remnawave/backups/remnawave_backup_*.tar.gz root@новый-сервер:/tmp/
+
+# 3. Восстановить на новом сервере
+curl -sL https://raw.githubusercontent.com/Armruswest2024/remnainstabac/main/install.sh | bash
+# Выбрать пункт 2) Restore from Backup, указать путь к файлу
 ```
 
 ## Структура файлов
@@ -89,7 +77,7 @@ curl -sL https://raw.githubusercontent.com/Armruswest2024/remnainstabac/main/ins
 ```
 /opt/remnawave/
 ├── docker-compose.yml      # Backend (RemnaWave + PostgreSQL + Valkey)
-├── .env                    # Конфигурация (пароли, APP_SECRET, DB_URL)
+├── .env                    # Конфигурация (пароли, секреты, URL)
 ├── nginx/
 │   ├── docker-compose.yml  # Nginx контейнер
 │   ├── nginx.conf          # Конфигурация Nginx
@@ -97,21 +85,16 @@ curl -sL https://raw.githubusercontent.com/Armruswest2024/remnainstabac/main/ins
 │   ├── privkey.key
 │   ├── subdomain_fullchain.pem  # SSL для подписки
 │   └── subdomain_privkey.key
-└── subscription/
-    ├── docker-compose.yml  # Subscription page
-    └── .env                # API-токен подписки
+├── subscription/
+│   ├── docker-compose.yml  # Subscription page
+│   └── .env                # API-токен подписки
+└── backups/
+    └── remnawave_backup_YYYYMMDD_HHMMSS.tar.gz
 ```
 
-## Обновление
+## Примечания
 
-```bash
-sudo ./install.sh
-# Выберите "Обновить панель"
-```
-
-## Удаление
-
-```bash
-sudo ./install.sh
-# Выберите "Удалить панель"
-```
+- Бэкап создаётся в `/opt/remnawave/backups/`
+- Хранится 7 последних копий, старые удаляются автоматически
+- Дамп базы сжимается через `gzip -9`
+- Для восстановления нужен полный архив с файлами `database.sql.gz` и конфигами
