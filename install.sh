@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 
 # RemnaWave Panel Installation Script
 # Version: 3.1.3 (Docker Compose Edition) — ИСПРАВЛЕННАЯ ВЕРСИЯ
@@ -235,8 +235,13 @@ install_backend() {
     sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$DB_PASSWORD/" .env
     sed -i "s|^\(DATABASE_URL=\"postgresql://postgres:\).*\(@.*\)|\1$DB_PASSWORD\2|" .env
 
-    sed -i "s|^FRONT_END_DOMAIN=.*|FRONT_END_DOMAIN=$DOMAIN|" .env
+    sed -i "s|^PANEL_DOMAIN=.*|PANEL_DOMAIN=$DOMAIN|" .env
     sed -i "s|^SUB_PUBLIC_DOMAIN=.*|SUB_PUBLIC_DOMAIN=$SUB_DOMAIN|" .env
+
+    # [ИСПРАВЛЕНО v3.1.4] Добавлена переменная SERVICE_SNI_VERIFICATION
+    if ! grep -q "^SERVICE_SNI_VERIFICATION=" .env; then
+        echo "SERVICE_SNI_VERIFICATION=true" >> .env
+    fi
 
     info "Backend сконфигурирован"
 }
@@ -641,7 +646,7 @@ fi
 # [ИСПРАВЛЕНО] База данных — pg_dump
 pg_container=$(cd "$APP_DIR" && docker compose ps --format '{{.Name}}' 2>/dev/null | grep -i postgres | head -1)
 if [[ -n "$pg_container" ]]; then
-    docker exec "$pg_container" pg_dump -U postgres remnawave > "${BACKUP_PATH}/database.sql" 2>/dev/null || \
+    docker exec "$pg_container" pg_dump -U postgres postgres > "${BACKUP_PATH}/database.sql" 2>/dev/null || \
         echo "$(date '+%Y-%m-%d %H:%M:%S') ОШИБКА: pg_dump не удался" >> /var/log/remnawave_backup.log
 fi
 
@@ -661,7 +666,7 @@ web_server_type="nginx"
 [[ -d "$NGINX_DIR" ]] && [[ -f "$NGINX_DIR/docker-compose.yml" ]] && web_server_type="nginx"
 [[ -f "/etc/caddy/Caddyfile" ]] && web_server_type="caddy"
 echo "$web_server_type" > "${BACKUP_PATH}/web_server_type"
-grep "^FRONT_END_DOMAIN=" .env 2>/dev/null | cut -d= -f2 > "${BACKUP_PATH}/domain"
+grep "^PANEL_DOMAIN=" .env 2>/dev/null | cut -d= -f2 > "${BACKUP_PATH}/domain"
 grep "^SUB_PUBLIC_DOMAIN=" .env 2>/dev/null | cut -d= -f2 > "${BACKUP_PATH}/sub_domain"
 
 # Архив
@@ -791,7 +796,7 @@ backup_panel() {
     pg_container=$(docker compose ps --format '{{.Name}}' 2>/dev/null | grep -i postgres | head -1)
     
     if [[ -n "$pg_container" ]]; then
-        docker exec "$pg_container" pg_dump -U postgres remnawave > "${backup_path}/database.sql" 2>/dev/null && \
+        docker exec "$pg_container" pg_dump -U postgres postgres > "${backup_path}/database.sql" 2>/dev/null && \
             info "Дамп базы данных создан ($pg_container)" || \
             warn "Не удалось создать дамп базы данных"
     else
@@ -955,7 +960,7 @@ restore_panel() {
     if [[ -n "$new_domain" ]]; then
         info "Обновляю домен: ${backup_domain} → ${new_domain}"
 
-        sed -i "s|^FRONT_END_DOMAIN=.*|FRONT_END_DOMAIN=$new_domain|" "${APP_DIR}/.env"
+        sed -i "s|^PANEL_DOMAIN=.*|PANEL_DOMAIN=$new_domain|" "${APP_DIR}/.env"
         sed -i "s|^SUB_PUBLIC_DOMAIN=.*|SUB_PUBLIC_DOMAIN=$new_sub_domain|" "${APP_DIR}/.env"
 
         # Обновляем в .env подписки
@@ -1014,9 +1019,9 @@ restore_panel() {
 
         if [[ -f "${backup_dir}/database.sql" ]]; then
             info "Восстанавливаю базу данных..."
-            docker exec "$pg_container" psql -U postgres -c "DROP DATABASE IF EXISTS remnawave;" 2>/dev/null || true
-            docker exec "$pg_container" psql -U postgres -c "CREATE DATABASE remnawave OWNER postgres;" 2>/dev/null || true
-            cat "${backup_dir}/database.sql" | docker exec -i "$pg_container" psql -U postgres -d remnawave 2>/dev/null && \
+            docker exec "$pg_container" psql -U postgres -c "DROP DATABASE IF EXISTS postgres;" 2>/dev/null || true
+            docker exec "$pg_container" psql -U postgres -c "# Database "postgres" already exists — skip creation" 2>/dev/null || true
+            cat "${backup_dir}/database.sql" | docker exec -i "$pg_container" psql -U postgres -d postgres 2>/dev/null && \
                 info "База данных восстановлена" || \
                 warn "Ошибка восстановления базы данных"
         else
@@ -1143,7 +1148,7 @@ migrate_panel() {
              # [ИСПРАВЛЕНО] pg_dump \
              PG_CONTAINER=\$(docker compose ps --format '{{.Name}}' 2>/dev/null | grep -i postgres | head -1) && \
              if [[ -n \"\$PG_CONTAINER\" ]]; then \
-                 docker exec \"\$PG_CONTAINER\" pg_dump -U postgres remnawave > \$BACKUP_DIR/\$BACKUP_NAME/database.sql 2>/dev/null; \
+                 docker exec \"\$PG_CONTAINER\" pg_dump -U postgres postgres > \$BACKUP_DIR/\$BACKUP_NAME/database.sql 2>/dev/null; \
              fi && \
              \
              # [ИСПРАВЛЕНО v3.1.2] Valkey/Redis дамп \
@@ -1154,7 +1159,7 @@ migrate_panel() {
              fi && \
              \
              # [ИСПРАВЛЕНО] Метаданные \
-             grep '^FRONT_END_DOMAIN=' .env 2>/dev/null | cut -d= -f2 > \$BACKUP_DIR/\$BACKUP_NAME/domain && \
+             grep "^PANEL_DOMAIN=" .env 2>/dev/null | cut -d= -f2 > "${BACKUP_DIR}/${BACKUP_NAME}/domain"
              grep '^SUB_PUBLIC_DOMAIN=' .env 2>/dev/null | cut -d= -f2 > \$BACKUP_DIR/\$BACKUP_NAME/sub_domain && \
              echo 'nginx' > \$BACKUP_DIR/\$BACKUP_NAME/web_server_type && \
              [[ -f /etc/caddy/Caddyfile ]] && echo 'caddy' > \$BACKUP_DIR/\$BACKUP_NAME/web_server_type; \
@@ -1291,7 +1296,7 @@ show_status() {
     fi
 
     if [[ -f "$CONFIG_FILE" ]]; then
-        local domain=$(grep "^FRONT_END_DOMAIN=" "$CONFIG_FILE" | cut -d= -f2)
+        local domain=$(grep "^PANEL_DOMAIN=" "$CONFIG_FILE" | cut -d= -f2)
         echo -e "Домен:      ${domain:-не настроен}"
     fi
 
@@ -1408,3 +1413,5 @@ main() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi
+
+
