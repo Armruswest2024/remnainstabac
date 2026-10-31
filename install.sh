@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 
 # RemnaWave Panel Installation Script
 # Version: 3.1.3 (Docker Compose Edition) — ИСПРАВЛЕННАЯ ВЕРСИЯ
@@ -82,7 +82,7 @@ run_quiet() {
         echo -e "${RED} ОШИБКА${NC}"
         error "Этап провалился (код $exit_code). Логи: $LOG_FILE"
         return 1
-    
+    fi
 }
 
 # ===================== ГЕНЕРАЦИЯ СЕКРЕТОВ =====================
