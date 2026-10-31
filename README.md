@@ -65,7 +65,10 @@ curl -sL https://raw.githubusercontent.com/Armruswest2024/remnainstabac/main/ins
 # Выбрать пункт 1) Create Backup
 
 # 2. Скопировать бэкап на новый сервер
+# Стандартный порт 22:
 scp /opt/remnawave/backups/remnawave_backup_*.tar.gz root@новый-сервер:/tmp/
+# Если порт другой, например 2222:
+scp -P 2222 /opt/remnawave/backups/remnawave_backup_*.tar.gz root@новый-сервер:/tmp/
 
 # 3. Восстановить на новом сервере
 curl -sL https://raw.githubusercontent.com/Armruswest2024/remnainstabac/main/install.sh | bash
