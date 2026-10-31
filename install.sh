@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -euo pipefail
+# set -euo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -199,7 +199,7 @@ show_menu() {
     echo "  3) Показать статус"
     echo "  4) Выход"
     echo ""
-    read -rp "Выберите опцию [1-4]: " choice < /dev/tty
+    if [ -e /dev/tty ]; then read -rp "Выберите опцию [1-4]: " choice < /dev/tty; else read -p "Выберите опцию [1-4]: " choice; fi
 
     case $choice in
         1)
